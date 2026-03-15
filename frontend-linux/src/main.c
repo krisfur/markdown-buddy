@@ -28,17 +28,19 @@ static const char *APP_CSS =
 static const char *DEFAULT_DOCUMENT =
     "# Welcome to Markdown Buddy\n"
     "\n"
-    "Start with a heading and a few paragraphs.\n"
+    "A native markdown workspace with **live preview**, *fast notes*, and handy section jumps.\n"
     "\n"
     "## Live Preview\n"
     "\n"
-    "The Odin backend will parse this document and keep the sections list fresh.\n"
+    "The Odin backend keeps the section list fresh while the GTK shell renders [the project repo](https://github.com/krisfur/markdown-buddy).\n"
+    "\n"
+    "> Write in plain markdown and get a calmer reading view beside the editor.\n"
     "\n"
     "## Next Steps\n"
     "\n"
     "- Open and save files\n"
-    "- Better markdown rendering\n"
-    "- Section navigation\n"
+    "- Polish more markdown details like **bold**, *italic*, and `inline code`\n"
+    "- Keep section navigation feeling instant\n"
     "\n"
     "```\n"
     "markdown-buddy --build linux\n"
@@ -178,35 +180,98 @@ static void append_inline_markup(GString *markup, const char *text) {
     const char *cursor = text;
 
     while (cursor != NULL && *cursor != '\0') {
-        const char *tick = strchr(cursor, '`');
+        const char *next_tick = strchr(cursor, '`');
+        const char *next_bold = strstr(cursor, "**");
+        const char *next_link = strchr(cursor, '[');
+        const char *next_italic = strchr(cursor, '*');
+        const char *next = NULL;
 
-        if (tick == NULL) {
+        if (next_bold != NULL && (next == NULL || next_bold < next)) {
+            next = next_bold;
+        }
+        if (next_tick != NULL && (next == NULL || next_tick < next)) {
+            next = next_tick;
+        }
+        if (next_link != NULL && (next == NULL || next_link < next)) {
+            next = next_link;
+        }
+        if (next_italic != NULL && (next == NULL || next_italic < next)) {
+            next = next_italic;
+        }
+
+        if (next == NULL) {
             append_escaped_markup(markup, cursor);
             return;
         }
 
-        if (tick > cursor) {
-            gchar *prefix = g_strndup(cursor, tick - cursor);
+        if (next > cursor) {
+            gchar *prefix = g_strndup(cursor, next - cursor);
             append_escaped_markup(markup, prefix);
             g_free(prefix);
+            cursor = next;
         }
 
-        cursor = tick + 1;
-        tick = strchr(cursor, '`');
-        if (tick == NULL) {
-            g_string_append(markup, "`");
-            append_escaped_markup(markup, cursor);
-            return;
+        if (g_str_has_prefix(cursor, "**")) {
+            const char *end = strstr(cursor + 2, "**");
+            if (end != NULL && end > cursor + 2) {
+                gchar *bold = g_strndup(cursor + 2, end - (cursor + 2));
+                g_string_append(markup, "<b>");
+                append_inline_markup(markup, bold);
+                g_string_append(markup, "</b>");
+                g_free(bold);
+                cursor = end + 2;
+                continue;
+            }
         }
 
-        g_string_append(markup, "<span foreground='#8caaee' background='#39465e'><tt>");
-        if (tick > cursor) {
-            gchar *code = g_strndup(cursor, tick - cursor);
-            append_escaped_markup(markup, code);
-            g_free(code);
+        if (*cursor == '*' && !g_str_has_prefix(cursor, "**")) {
+            const char *end = strchr(cursor + 1, '*');
+            if (end != NULL && end > cursor + 1) {
+                gchar *italic = g_strndup(cursor + 1, end - (cursor + 1));
+                g_string_append(markup, "<i>");
+                append_inline_markup(markup, italic);
+                g_string_append(markup, "</i>");
+                g_free(italic);
+                cursor = end + 1;
+                continue;
+            }
         }
-        g_string_append(markup, "</tt></span>");
-        cursor = tick + 1;
+
+        if (*cursor == '`') {
+            const char *end = strchr(cursor + 1, '`');
+            if (end != NULL && end > cursor + 1) {
+                gchar *code = g_strndup(cursor + 1, end - (cursor + 1));
+                g_string_append(markup, "<span foreground='#8caaee' background='#39465e'><tt>");
+                append_escaped_markup(markup, code);
+                g_string_append(markup, "</tt></span>");
+                g_free(code);
+                cursor = end + 1;
+                continue;
+            }
+        }
+
+        if (*cursor == '[') {
+            const char *mid = strchr(cursor + 1, ']');
+            if (mid != NULL && mid[1] == '(') {
+                const char *end = strchr(mid + 2, ')');
+                if (end != NULL) {
+                    gchar *label = g_strndup(cursor + 1, mid - (cursor + 1));
+                    gchar *href = g_strndup(mid + 2, end - (mid + 2));
+                    gchar *escaped_href = g_markup_escape_text(href, -1);
+                    g_string_append_printf(markup, "<span foreground='#7fc1ff'><a href=\"%s\">", escaped_href);
+                    append_inline_markup(markup, label);
+                    g_string_append(markup, "</a></span>");
+                    g_free(escaped_href);
+                    g_free(label);
+                    g_free(href);
+                    cursor = end + 1;
+                    continue;
+                }
+            }
+        }
+
+        append_escaped_markup(markup, (gchar[2]) { *cursor, '\0' });
+        cursor += 1;
     }
 }
 
