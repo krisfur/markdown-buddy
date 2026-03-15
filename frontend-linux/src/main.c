@@ -16,7 +16,7 @@ static const char *APP_CSS =
     ".root-shell { background: linear-gradient(180deg, #192330 0%, #131a24 100%); }"
     ".sidebar-panel, .content-panel { background: rgba(41, 52, 72, 0.96); border: 1px solid rgba(129, 161, 193, 0.22); box-shadow: 0 16px 40px rgba(7, 11, 16, 0.28); }"
     ".sidebar-panel { border-right-color: rgba(129, 161, 193, 0.3); }"
-    ".content-panel { border-radius: 16px; overflow: hidden; }"
+    ".content-panel { border-radius: 16px; }"
     ".panel-header { padding: 12px 16px; border-bottom: 1px solid rgba(129, 161, 193, 0.14); background: rgba(44, 57, 79, 0.94); border-top-left-radius: 16px; border-top-right-radius: 16px; }"
     ".panel-title { font-family: 'IBM Plex Sans', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: #9daccb; }"
     ".panel-body { padding: 10px; }"
@@ -150,6 +150,24 @@ static gboolean parse_list_item(const char *line, const char **item_out) {
     return FALSE;
 }
 
+static gboolean parse_blockquote(const char *line, const char **quote_out) {
+    while (*line == ' ' || *line == '\t') {
+        ++line;
+    }
+
+    if (*line != '>') {
+        return FALSE;
+    }
+
+    ++line;
+    if (*line == ' ') {
+        ++line;
+    }
+
+    *quote_out = line;
+    return TRUE;
+}
+
 static void append_escaped_markup(GString *markup, const char *text) {
     gchar *escaped = g_markup_escape_text(text != NULL ? text : "", -1);
     g_string_append(markup, escaped);
@@ -213,6 +231,7 @@ static void render_preview(GtkLabel *label, const char *markdown_text) {
         int level = 0;
         const char *title = NULL;
         const char *item = NULL;
+        const char *quote = NULL;
 
         if (g_str_has_prefix(line, "```")) {
             in_code = !in_code;
@@ -253,6 +272,13 @@ static void render_preview(GtkLabel *label, const char *markdown_text) {
             g_string_append(markup, "<span foreground='#81a1c1'>•</span> ");
             append_inline_markup(markup, item);
             g_string_append(markup, "\n");
+            continue;
+        }
+
+        if (parse_blockquote(line, &quote)) {
+            g_string_append(markup, "<span foreground='#719cd6'>│</span> <span foreground='#9fb4d0'><i>");
+            append_inline_markup(markup, quote);
+            g_string_append(markup, "</i></span>\n");
             continue;
         }
 
