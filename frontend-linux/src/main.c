@@ -608,11 +608,22 @@ static void open_action(GSimpleAction *action, GVariant *parameter, gpointer use
     request_document_replacement(widgets, PENDING_ACTION_OPEN_DIALOG, NULL);
 }
 
+static GdkClipboard *editor_clipboard(AppWidgets *widgets) {
+    return gdk_display_get_clipboard(gtk_widget_get_display(widgets->editor_view));
+}
+
 static void new_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
     AppWidgets *widgets = user_data;
     (void)action;
     (void)parameter;
     request_document_replacement(widgets, PENDING_ACTION_NEW, NULL);
+}
+
+static void quit_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    (void)action;
+    (void)parameter;
+    request_document_replacement(widgets, PENDING_ACTION_CLOSE, NULL);
 }
 
 static void save_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
@@ -629,6 +640,75 @@ static void save_as_action(GSimpleAction *action, GVariant *parameter, gpointer 
     (void)parameter;
     set_pending_action(widgets, PENDING_ACTION_NONE, NULL);
     save_document_as(widgets);
+}
+
+static void undo_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    (void)action;
+    (void)parameter;
+    if (gtk_text_buffer_get_can_undo(widgets->editor_buffer)) {
+        gtk_text_buffer_undo(widgets->editor_buffer);
+    }
+}
+
+static void redo_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    (void)action;
+    (void)parameter;
+    if (gtk_text_buffer_get_can_redo(widgets->editor_buffer)) {
+        gtk_text_buffer_redo(widgets->editor_buffer);
+    }
+}
+
+static void cut_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    (void)action;
+    (void)parameter;
+    gtk_text_buffer_cut_clipboard(widgets->editor_buffer, editor_clipboard(widgets), TRUE);
+}
+
+static void copy_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    (void)action;
+    (void)parameter;
+    gtk_text_buffer_copy_clipboard(widgets->editor_buffer, editor_clipboard(widgets));
+}
+
+static void paste_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    (void)action;
+    (void)parameter;
+    gtk_text_buffer_paste_clipboard(widgets->editor_buffer, editor_clipboard(widgets), NULL, TRUE);
+}
+
+static void select_all_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    GtkTextIter start;
+    GtkTextIter end;
+    (void)action;
+    (void)parameter;
+    gtk_text_buffer_get_bounds(widgets->editor_buffer, &start, &end);
+    gtk_text_buffer_select_range(widgets->editor_buffer, &start, &end);
+    gtk_widget_grab_focus(widgets->editor_view);
+}
+
+static void about_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    GtkWidget *dialog;
+    const char *authors[] = {"Kris Furman", NULL};
+    (void)action;
+    (void)parameter;
+
+    dialog = gtk_about_dialog_new();
+    gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog), "Markdown Buddy");
+    gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dialog), "Native markdown editor with a live preview and section list.");
+    gtk_about_dialog_set_website(GTK_ABOUT_DIALOG(dialog), "https://github.com/krisfur/markdown-buddy");
+    gtk_about_dialog_set_website_label(GTK_ABOUT_DIALOG(dialog), "Project repository");
+    gtk_about_dialog_set_authors(GTK_ABOUT_DIALOG(dialog), authors);
+    gtk_about_dialog_set_system_information(GTK_ABOUT_DIALOG(dialog), "Backend: Odin C ABI\nFrontend: GTK4 on Linux");
+    gtk_about_dialog_set_license_type(GTK_ABOUT_DIALOG(dialog), GTK_LICENSE_MIT_X11);
+    gtk_window_set_transient_for(GTK_WINDOW(dialog), widgets->window);
+    gtk_window_present(GTK_WINDOW(dialog));
 }
 
 static void editor_changed(GtkTextBuffer *buffer, gpointer user_data) {
@@ -719,6 +799,7 @@ static GtkWidget *build_editor_pane(AppWidgets *widgets) {
 
     gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(view), GTK_WRAP_WORD_CHAR);
     gtk_text_view_set_monospace(GTK_TEXT_VIEW(view), TRUE);
+    gtk_text_buffer_set_enable_undo(buffer, TRUE);
     gtk_widget_set_hexpand(scroll, TRUE);
     gtk_widget_set_vexpand(scroll, TRUE);
     gtk_widget_add_css_class(view, "editor-view");
@@ -757,14 +838,31 @@ static GtkWidget *build_preview_pane(AppWidgets *widgets) {
 static GtkWidget *build_menu_bar(void) {
     GMenu *root = g_menu_new();
     GMenu *file = g_menu_new();
+    GMenu *edit = g_menu_new();
+    GMenu *help = g_menu_new();
 
     g_menu_append(file, "New", "app.new");
     g_menu_append(file, "Open", "app.open");
     g_menu_append(file, "Save", "app.save");
     g_menu_append(file, "Save As", "app.save-as");
+    g_menu_append(file, "Quit", "app.quit");
+
+    g_menu_append(edit, "Undo", "app.undo");
+    g_menu_append(edit, "Redo", "app.redo");
+    g_menu_append(edit, "Cut", "app.cut");
+    g_menu_append(edit, "Copy", "app.copy");
+    g_menu_append(edit, "Paste", "app.paste");
+    g_menu_append(edit, "Select All", "app.select-all");
+
+    g_menu_append(help, "About", "app.about");
+
     g_menu_append_submenu(root, "File", G_MENU_MODEL(file));
+    g_menu_append_submenu(root, "Edit", G_MENU_MODEL(edit));
+    g_menu_append_submenu(root, "Help", G_MENU_MODEL(help));
 
     g_object_unref(file);
+    g_object_unref(edit);
+    g_object_unref(help);
     return gtk_popover_menu_bar_new_from_model(G_MENU_MODEL(root));
 }
 
@@ -780,6 +878,14 @@ static void install_actions(AppWidgets *widgets) {
         {"open", open_action, NULL, NULL, NULL},
         {"save", save_action, NULL, NULL, NULL},
         {"save-as", save_as_action, NULL, NULL, NULL},
+        {"quit", quit_action, NULL, NULL, NULL},
+        {"undo", undo_action, NULL, NULL, NULL},
+        {"redo", redo_action, NULL, NULL, NULL},
+        {"cut", cut_action, NULL, NULL, NULL},
+        {"copy", copy_action, NULL, NULL, NULL},
+        {"paste", paste_action, NULL, NULL, NULL},
+        {"select-all", select_all_action, NULL, NULL, NULL},
+        {"about", about_action, NULL, NULL, NULL},
     };
 
     g_action_map_add_action_entries(G_ACTION_MAP(widgets->app), app_actions, G_N_ELEMENTS(app_actions), widgets);
@@ -787,6 +893,13 @@ static void install_actions(AppWidgets *widgets) {
     gtk_application_set_accels_for_action(widgets->app, "app.open", (const char *[]) {"<Primary>o", NULL});
     gtk_application_set_accels_for_action(widgets->app, "app.save", (const char *[]) {"<Primary>s", NULL});
     gtk_application_set_accels_for_action(widgets->app, "app.save-as", (const char *[]) {"<Primary><Shift>s", NULL});
+    gtk_application_set_accels_for_action(widgets->app, "app.quit", (const char *[]) {"<Primary>q", NULL});
+    gtk_application_set_accels_for_action(widgets->app, "app.undo", (const char *[]) {"<Primary>z", NULL});
+    gtk_application_set_accels_for_action(widgets->app, "app.redo", (const char *[]) {"<Primary><Shift>z", NULL});
+    gtk_application_set_accels_for_action(widgets->app, "app.cut", (const char *[]) {"<Primary>x", NULL});
+    gtk_application_set_accels_for_action(widgets->app, "app.copy", (const char *[]) {"<Primary>c", NULL});
+    gtk_application_set_accels_for_action(widgets->app, "app.paste", (const char *[]) {"<Primary>v", NULL});
+    gtk_application_set_accels_for_action(widgets->app, "app.select-all", (const char *[]) {"<Primary>a", NULL});
 }
 
 static void ensure_window(AppWidgets *widgets, GtkApplication *app) {
