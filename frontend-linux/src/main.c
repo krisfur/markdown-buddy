@@ -29,7 +29,7 @@ typedef struct AppWidgets {
 
 static const char *APP_CSS =
     ".root-shell { background: linear-gradient(180deg, #192330 0%, #131a24 100%); }"
-    ".app-menu { padding: 8px 12px 0 12px; }"
+    ".app-menu { padding: 8px 0 0 0; margin: 0; }"
     ".sidebar-panel, .content-panel { background: rgba(41, 52, 72, 0.96); border: 1px solid rgba(129, 161, 193, 0.22); box-shadow: 0 16px 40px rgba(7, 11, 16, 0.28); }"
     ".sidebar-panel { border-right-color: rgba(129, 161, 193, 0.3); }"
     ".content-panel { border-radius: 16px; }"
@@ -695,7 +695,7 @@ static void select_all_action(GSimpleAction *action, GVariant *parameter, gpoint
 static void about_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
     AppWidgets *widgets = user_data;
     GtkWidget *dialog;
-    const char *authors[] = {"Kris Furman", NULL};
+    const char *authors[] = {"Krzysztof Furman, PhD", NULL};
     (void)action;
     (void)parameter;
 
@@ -709,6 +709,30 @@ static void about_action(GSimpleAction *action, GVariant *parameter, gpointer us
     gtk_about_dialog_set_license_type(GTK_ABOUT_DIALOG(dialog), GTK_LICENSE_MIT_X11);
     gtk_window_set_transient_for(GTK_WINDOW(dialog), widgets->window);
     gtk_window_present(GTK_WINDOW(dialog));
+}
+
+static void repository_launch_response(GObject *source_object, GAsyncResult *result, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    GtkUriLauncher *launcher = GTK_URI_LAUNCHER(source_object);
+    GError *error = NULL;
+
+    if (!gtk_uri_launcher_launch_finish(launcher, result, &error) && error != NULL) {
+        gchar *message = g_strdup_printf("Unable to open repository URL:\n%s", error->message);
+        show_error_dialog(widgets, message);
+        g_free(message);
+        g_clear_error(&error);
+    }
+}
+
+static void repository_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    GtkUriLauncher *launcher;
+    (void)action;
+    (void)parameter;
+
+    launcher = gtk_uri_launcher_new("https://github.com/krisfur/markdown-buddy");
+    gtk_uri_launcher_launch(launcher, widgets->window, NULL, repository_launch_response, widgets);
+    g_object_unref(launcher);
 }
 
 static void editor_changed(GtkTextBuffer *buffer, gpointer user_data) {
@@ -855,6 +879,7 @@ static GtkWidget *build_menu_bar(void) {
     g_menu_append(edit, "Select All", "app.select-all");
 
     g_menu_append(help, "About", "app.about");
+    g_menu_append(help, "Repository ↗", "app.repository");
 
     g_menu_append_submenu(root, "File", G_MENU_MODEL(file));
     g_menu_append_submenu(root, "Edit", G_MENU_MODEL(edit));
@@ -886,6 +911,7 @@ static void install_actions(AppWidgets *widgets) {
         {"paste", paste_action, NULL, NULL, NULL},
         {"select-all", select_all_action, NULL, NULL, NULL},
         {"about", about_action, NULL, NULL, NULL},
+        {"repository", repository_action, NULL, NULL, NULL},
     };
 
     g_action_map_add_action_entries(G_ACTION_MAP(widgets->app), app_actions, G_N_ELEMENTS(app_actions), widgets);
@@ -903,6 +929,7 @@ static void install_actions(AppWidgets *widgets) {
 }
 
 static void ensure_window(AppWidgets *widgets, GtkApplication *app) {
+    GtkWidget *titlebar;
     GtkWidget *window;
     GtkWidget *shell;
     GtkWidget *menu_bar;
@@ -921,6 +948,9 @@ static void ensure_window(AppWidgets *widgets, GtkApplication *app) {
     widgets->window = GTK_WINDOW(window);
 
     gtk_window_set_default_size(GTK_WINDOW(window), 1280, 800);
+    titlebar = gtk_header_bar_new();
+    gtk_header_bar_set_show_title_buttons(GTK_HEADER_BAR(titlebar), TRUE);
+    gtk_window_set_titlebar(GTK_WINDOW(window), titlebar);
     load_css();
     install_actions(widgets);
     g_signal_connect(window, "close-request", G_CALLBACK(on_close_request), widgets);
@@ -930,7 +960,7 @@ static void ensure_window(AppWidgets *widgets, GtkApplication *app) {
 
     menu_bar = build_menu_bar();
     gtk_widget_add_css_class(menu_bar, "app-menu");
-    gtk_box_append(GTK_BOX(shell), menu_bar);
+    gtk_header_bar_pack_start(GTK_HEADER_BAR(titlebar), menu_bar);
 
     outer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_hexpand(outer, TRUE);
