@@ -696,6 +696,128 @@ static void select_all_action(GSimpleAction *action, GVariant *parameter, gpoint
     gtk_widget_grab_focus(widgets->editor_view);
 }
 
+static gboolean get_editor_selection_bytes(AppWidgets *widgets, gchar **text_out, gint *start_out, gint *end_out) {
+    GtkTextIter start;
+    GtkTextIter end;
+    GtkTextIter sel_start;
+    GtkTextIter sel_end;
+    gchar *text;
+    gint start_chars;
+    gint end_chars;
+
+    gtk_text_buffer_get_bounds(widgets->editor_buffer, &start, &end);
+    text = gtk_text_buffer_get_text(widgets->editor_buffer, &start, &end, FALSE);
+    if (text == NULL) {
+        return FALSE;
+    }
+
+    if (gtk_text_buffer_get_selection_bounds(widgets->editor_buffer, &sel_start, &sel_end)) {
+        start_chars = gtk_text_iter_get_offset(&sel_start);
+        end_chars = gtk_text_iter_get_offset(&sel_end);
+    } else {
+        gtk_text_buffer_get_iter_at_mark(widgets->editor_buffer, &sel_start, gtk_text_buffer_get_insert(widgets->editor_buffer));
+        start_chars = gtk_text_iter_get_offset(&sel_start);
+        end_chars = start_chars;
+    }
+
+    *text_out = text;
+    *start_out = (gint)(g_utf8_offset_to_pointer(text, start_chars) - text);
+    *end_out = (gint)(g_utf8_offset_to_pointer(text, end_chars) - text);
+    return TRUE;
+}
+
+static void apply_edit_result_to_buffer(AppWidgets *widgets, const gchar *old_text, const MbEditResult *result) {
+    GtkTextIter start;
+    GtkTextIter end;
+    GtkTextIter replace_start;
+    GtkTextIter replace_end;
+    gchar *text;
+    gint start_chars;
+    gint end_chars;
+    gsize old_length;
+    gsize new_length;
+    gsize prefix;
+    gsize old_suffix;
+    gsize new_suffix;
+    gsize start_bytes;
+    gsize end_bytes;
+
+    text = g_strndup(result->text.data != NULL ? result->text.data : "", result->text.length);
+    old_length = strlen(old_text);
+    new_length = strlen(text);
+    prefix = 0;
+
+    while (prefix < old_length && prefix < new_length && old_text[prefix] == text[prefix]) {
+        prefix += 1;
+    }
+
+    old_suffix = old_length;
+    new_suffix = new_length;
+    while (old_suffix > prefix && new_suffix > prefix && old_text[old_suffix - 1] == text[new_suffix - 1]) {
+        old_suffix -= 1;
+        new_suffix -= 1;
+    }
+
+    gtk_text_buffer_begin_user_action(widgets->editor_buffer);
+    gtk_text_buffer_get_iter_at_offset(widgets->editor_buffer, &replace_start, g_utf8_pointer_to_offset(old_text, old_text + prefix));
+    gtk_text_buffer_get_iter_at_offset(widgets->editor_buffer, &replace_end, g_utf8_pointer_to_offset(old_text, old_text + old_suffix));
+    gtk_text_buffer_delete(widgets->editor_buffer, &replace_start, &replace_end);
+    if (new_suffix > prefix) {
+        gtk_text_buffer_insert(widgets->editor_buffer, &replace_start, text + prefix, (gint)(new_suffix - prefix));
+    }
+    gtk_text_buffer_end_user_action(widgets->editor_buffer);
+
+    start_bytes = MIN((gsize)MAX(result->selection_start, 0), strlen(text));
+    end_bytes = MIN((gsize)MAX(result->selection_end, 0), strlen(text));
+    start_chars = g_utf8_pointer_to_offset(text, text + start_bytes);
+    end_chars = g_utf8_pointer_to_offset(text, text + end_bytes);
+
+    gtk_text_buffer_get_iter_at_offset(widgets->editor_buffer, &start, start_chars);
+    gtk_text_buffer_get_iter_at_offset(widgets->editor_buffer, &end, end_chars);
+    gtk_text_buffer_select_range(widgets->editor_buffer, &start, &end);
+    gtk_widget_grab_focus(widgets->editor_view);
+    set_dirty(widgets, TRUE);
+    schedule_refresh(widgets);
+
+    g_free(text);
+}
+
+static void apply_edit_command(AppWidgets *widgets, MbEditCommand command) {
+    gchar *text = NULL;
+    gint selection_start = 0;
+    gint selection_end = 0;
+    MbEditResult result = {0};
+    MbStatus status;
+
+    if (!get_editor_selection_bytes(widgets, &text, &selection_start, &selection_end)) {
+        return;
+    }
+
+    status = mb_apply_edit_command(text, strlen(text), selection_start, selection_end, command, &result);
+    if (status == MB_STATUS_OK) {
+        apply_edit_result_to_buffer(widgets, text, &result);
+        mb_free_edit_result(&result);
+    } else {
+        show_error_dialog(widgets, "Unable to apply markdown formatting.");
+    }
+
+    g_free(text);
+}
+
+static void bold_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    (void)action;
+    (void)parameter;
+    apply_edit_command(widgets, MB_EDIT_BOLD);
+}
+
+static void italic_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    (void)action;
+    (void)parameter;
+    apply_edit_command(widgets, MB_EDIT_ITALIC);
+}
+
 static void about_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
     AppWidgets *widgets = user_data;
     GtkWidget *dialog;
@@ -886,6 +1008,8 @@ static GtkWidget *build_menu_bar(void) {
     g_menu_append(edit, "Copy", "app.copy");
     g_menu_append(edit, "Paste", "app.paste");
     g_menu_append(edit, "Select All", "app.select-all");
+    g_menu_append(edit, "Bold", "app.bold");
+    g_menu_append(edit, "Italic", "app.italic");
 
     g_menu_append(help, "About", "app.about");
     g_menu_append(help, "Repository ↗", "app.repository");
@@ -919,6 +1043,8 @@ static void install_actions(AppWidgets *widgets) {
         {"copy", copy_action, NULL, NULL, NULL},
         {"paste", paste_action, NULL, NULL, NULL},
         {"select-all", select_all_action, NULL, NULL, NULL},
+        {"bold", bold_action, NULL, NULL, NULL},
+        {"italic", italic_action, NULL, NULL, NULL},
         {"about", about_action, NULL, NULL, NULL},
         {"repository", repository_action, NULL, NULL, NULL},
     };
@@ -935,6 +1061,8 @@ static void install_actions(AppWidgets *widgets) {
     gtk_application_set_accels_for_action(widgets->app, "app.copy", (const char *[]) {"<Primary>c", NULL});
     gtk_application_set_accels_for_action(widgets->app, "app.paste", (const char *[]) {"<Primary>v", NULL});
     gtk_application_set_accels_for_action(widgets->app, "app.select-all", (const char *[]) {"<Primary>a", NULL});
+    gtk_application_set_accels_for_action(widgets->app, "app.bold", (const char *[]) {"<Primary>b", NULL});
+    gtk_application_set_accels_for_action(widgets->app, "app.italic", (const char *[]) {"<Primary>i", NULL});
 }
 
 static void ensure_window(AppWidgets *widgets, GtkApplication *app) {

@@ -30,6 +30,11 @@ typedef enum MbBlockKind {
     MB_BLOCK_CODE_BLOCK = 4,
 } MbBlockKind;
 
+typedef enum MbEditCommand {
+    MB_EDIT_BOLD = 1,
+    MB_EDIT_ITALIC = 2,
+} MbEditCommand;
+
 typedef struct MbString {
     char *data;
     size_t length;
@@ -65,8 +70,16 @@ typedef struct MbDocumentResult {
     size_t block_count;
 } MbDocumentResult;
 
+typedef struct MbEditResult {
+    MbString text;
+    int32_t selection_start;
+    int32_t selection_end;
+} MbEditResult;
+
 MbStatus mb_process_document(const char *input_utf8, size_t input_length, MbDocumentResult *out_result);
 void mb_free_document_result(MbDocumentResult *result);
+MbStatus mb_apply_edit_command(const char *input_utf8, size_t input_length, int32_t selection_start, int32_t selection_end, int32_t command, MbEditResult *out_result);
+void mb_free_edit_result(MbEditResult *result);
 
 #ifdef __cplusplus
 }

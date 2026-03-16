@@ -28,6 +28,11 @@ Mb_Block_Kind :: enum c.int {
     CODE_BLOCK = 4,
 }
 
+Mb_Edit_Command :: enum c.int {
+    BOLD = 1,
+    ITALIC = 2,
+}
+
 Mb_String :: struct {
     data: ^u8,
     length: c.size_t,
@@ -61,6 +66,12 @@ Mb_Document_Result :: struct {
     span_count: c.size_t,
     blocks: ^Mb_Preview_Block,
     block_count: c.size_t,
+}
+
+Mb_Edit_Result :: struct {
+    text: Mb_String,
+    selection_start: c.int,
+    selection_end: c.int,
 }
 
 Internal_Section :: struct {
@@ -125,6 +136,83 @@ clone_string :: proc(value: string) -> Mb_String {
     mem.copy_non_overlapping(&buffer[0], raw_data(value), len(value))
     result.data = &buffer[0]
     result.length = c.size_t(len(value))
+    return result
+}
+
+concat3 :: proc(a, b, c_: string) -> Mb_String {
+    total := len(a) + len(b) + len(c_)
+    result := Mb_String{}
+    if total == 0 {
+        return result
+    }
+
+    buffer := alloc_bytes(total)
+    if buffer == nil {
+        return result
+    }
+
+    cursor := 0
+    if len(a) > 0 {
+        mem.copy_non_overlapping(&buffer[cursor], raw_data(a), len(a))
+        cursor += len(a)
+    }
+    if len(b) > 0 {
+        mem.copy_non_overlapping(&buffer[cursor], raw_data(b), len(b))
+        cursor += len(b)
+    }
+    if len(c_) > 0 {
+        mem.copy_non_overlapping(&buffer[cursor], raw_data(c_), len(c_))
+    }
+
+    result.data = &buffer[0]
+    result.length = c.size_t(total)
+    return result
+}
+
+concat4 :: proc(a, b, c_, d: string) -> Mb_String {
+    total := len(a) + len(b) + len(c_) + len(d)
+    result := Mb_String{}
+    if total == 0 {
+        return result
+    }
+
+    buffer := alloc_bytes(total)
+    if buffer == nil {
+        return result
+    }
+
+    cursor := 0
+    if len(a) > 0 { mem.copy_non_overlapping(&buffer[cursor], raw_data(a), len(a)); cursor += len(a) }
+    if len(b) > 0 { mem.copy_non_overlapping(&buffer[cursor], raw_data(b), len(b)); cursor += len(b) }
+    if len(c_) > 0 { mem.copy_non_overlapping(&buffer[cursor], raw_data(c_), len(c_)); cursor += len(c_) }
+    if len(d) > 0 { mem.copy_non_overlapping(&buffer[cursor], raw_data(d), len(d)) }
+
+    result.data = &buffer[0]
+    result.length = c.size_t(total)
+    return result
+}
+
+concat5 :: proc(a, b, c_, d, e: string) -> Mb_String {
+    total := len(a) + len(b) + len(c_) + len(d) + len(e)
+    result := Mb_String{}
+    if total == 0 {
+        return result
+    }
+
+    buffer := alloc_bytes(total)
+    if buffer == nil {
+        return result
+    }
+
+    cursor := 0
+    if len(a) > 0 { mem.copy_non_overlapping(&buffer[cursor], raw_data(a), len(a)); cursor += len(a) }
+    if len(b) > 0 { mem.copy_non_overlapping(&buffer[cursor], raw_data(b), len(b)); cursor += len(b) }
+    if len(c_) > 0 { mem.copy_non_overlapping(&buffer[cursor], raw_data(c_), len(c_)); cursor += len(c_) }
+    if len(d) > 0 { mem.copy_non_overlapping(&buffer[cursor], raw_data(d), len(d)); cursor += len(d) }
+    if len(e) > 0 { mem.copy_non_overlapping(&buffer[cursor], raw_data(e), len(e)) }
+
+    result.data = &buffer[0]
+    result.length = c.size_t(total)
     return result
 }
 
@@ -532,6 +620,56 @@ copy_blocks :: proc(values: Block_Buffer, out_result: ^Mb_Document_Result) -> bo
     return true
 }
 
+has_wrapper :: proc(input, wrapper: string, start: int) -> bool {
+    if start < 0 || start+len(wrapper) > len(input) {
+        return false
+    }
+    return input[start:start+len(wrapper)] == wrapper
+}
+
+apply_wrapping_edit :: proc(input, wrapper: string, selection_start, selection_end: int, out_result: ^Mb_Edit_Result) -> bool {
+    w := len(wrapper)
+    start := min(selection_start, selection_end)
+    end := max(selection_start, selection_end)
+
+    if start < 0 || end < 0 || start > len(input) || end > len(input) {
+        return false
+    }
+
+    if start != end {
+        if end-start >= w*2 && has_wrapper(input, wrapper, start) && has_wrapper(input, wrapper, end-w) {
+            out_result.text = concat3(input[:start], input[start+w:end-w], input[end:])
+            out_result.selection_start = c.int(start)
+            out_result.selection_end = c.int(end - w*2)
+            return out_result.text.length > 0 || len(input) - w*2 == 0
+        }
+
+        if has_wrapper(input, wrapper, start-w) && has_wrapper(input, wrapper, end) {
+            out_result.text = concat3(input[:start-w], input[start:end], input[end+w:])
+            out_result.selection_start = c.int(start - w)
+            out_result.selection_end = c.int(end - w)
+            return out_result.text.length > 0 || len(input) - w*2 == 0
+        }
+
+        out_result.text = concat5(input[:start], wrapper, input[start:end], wrapper, input[end:])
+        out_result.selection_start = c.int(start + w)
+        out_result.selection_end = c.int(end + w)
+        return out_result.text.length > 0
+    }
+
+    if has_wrapper(input, wrapper, start-w) && has_wrapper(input, wrapper, start) {
+        out_result.text = concat3(input[:start-w], "", input[start+w:])
+        out_result.selection_start = c.int(start - w)
+        out_result.selection_end = c.int(start - w)
+        return out_result.text.length > 0 || len(input) - w*2 == 0
+    }
+
+    out_result.text = concat4(input[:start], wrapper, wrapper, input[end:])
+    out_result.selection_start = c.int(start + w)
+    out_result.selection_end = c.int(start + w)
+    return out_result.text.length > 0 || len(input)+w*2 == 0
+}
+
 @(export)
 mb_process_document :: proc(input_utf8: ^u8, input_length: c.size_t, out_result: ^Mb_Document_Result) -> Mb_Status {
     if out_result == nil {
@@ -561,6 +699,38 @@ mb_process_document :: proc(input_utf8: ^u8, input_length: c.size_t, out_result:
         return .INTERNAL_ERROR
     }
     if !copy_blocks(blocks, out_result) {
+        return .INTERNAL_ERROR
+    }
+
+    return .OK
+}
+
+@(export)
+mb_apply_edit_command :: proc(input_utf8: ^u8, input_length: c.size_t, selection_start, selection_end, command: c.int, out_result: ^Mb_Edit_Result) -> Mb_Status {
+    if out_result == nil {
+        return .INVALID_ARGUMENT
+    }
+
+    out_result^ = Mb_Edit_Result{}
+
+    if input_utf8 == nil && input_length > 0 {
+        return .INVALID_ARGUMENT
+    }
+
+    input := to_string(input_utf8, input_length)
+    ok := false
+
+    switch Mb_Edit_Command(command) {
+    case .BOLD:
+        ok = apply_wrapping_edit(input, "**", int(selection_start), int(selection_end), out_result)
+    case .ITALIC:
+        ok = apply_wrapping_edit(input, "*", int(selection_start), int(selection_end), out_result)
+    case:
+        return .INVALID_ARGUMENT
+    }
+
+    if !ok && len(input) > 0 {
+        mb_free_edit_result(out_result)
         return .INTERNAL_ERROR
     }
 
@@ -599,6 +769,16 @@ mb_free_document_result :: proc(result: ^Mb_Document_Result) {
     }
 
     result^ = Mb_Document_Result{}
+}
+
+@(export)
+mb_free_edit_result :: proc(result: ^Mb_Edit_Result) {
+    if result == nil {
+        return
+    }
+
+    free_string(result.text)
+    result^ = Mb_Edit_Result{}
 }
 
 main :: proc() {}
