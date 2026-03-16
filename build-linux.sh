@@ -29,6 +29,7 @@ mkdir -p "$DIST_DIR"
 
 odin build "$BACKEND_DIR/src" \
     -build-mode:shared \
+    -no-entry-point \
     -out:"$DIST_DIR/libmarkdown_buddy.so"
 
 cc "$FRONTEND_DIR/src/main.c" \

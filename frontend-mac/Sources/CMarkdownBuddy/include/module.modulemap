@@ -1,0 +1,4 @@
+module CMarkdownBuddy {
+    header "bridge.h"
+    export *
+}

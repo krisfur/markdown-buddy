@@ -780,5 +780,3 @@ mb_free_edit_result :: proc(result: ^Mb_Edit_Result) {
     free_string(result.text)
     result^ = Mb_Edit_Result{}
 }
-
-main :: proc() {}

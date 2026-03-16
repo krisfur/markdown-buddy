@@ -1,1 +1,6 @@
-dist
+dist/
+frontend-mac/.build/
+frontend-mac/.swiftpm/
+testing/abi_c_test
+*.dSYM/
+.DS_Store
