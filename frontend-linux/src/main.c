@@ -4,16 +4,23 @@
 #include "markdown_buddy.h"
 
 typedef struct AppWidgets {
+    GtkApplication *app;
+    GtkWindow *window;
     GtkTextBuffer *editor_buffer;
     GtkWidget *editor_view;
     GtkWidget *preview_label;
     GtkStringList *sections_model;
     GArray *section_offsets;
+    gchar *current_path;
     guint refresh_source_id;
+    gboolean is_dirty;
+    gboolean is_loading_document;
+    gboolean close_after_save;
 } AppWidgets;
 
 static const char *APP_CSS =
     ".root-shell { background: linear-gradient(180deg, #192330 0%, #131a24 100%); }"
+    ".app-menu { padding: 8px 12px 0 12px; }"
     ".sidebar-panel, .content-panel { background: rgba(41, 52, 72, 0.96); border: 1px solid rgba(129, 161, 193, 0.22); box-shadow: 0 16px 40px rgba(7, 11, 16, 0.28); }"
     ".sidebar-panel { border-right-color: rgba(129, 161, 193, 0.3); }"
     ".content-panel { border-radius: 16px; }"
@@ -25,32 +32,56 @@ static const char *APP_CSS =
     ".editor-view text selection, .preview-view selection { background-color: rgba(129, 161, 193, 0.35); }"
     "paned > separator { background: rgba(129, 161, 193, 0.2); min-width: 2px; }";
 
-static const char *DEFAULT_DOCUMENT =
-    "# Welcome to Markdown Buddy\n"
-    "\n"
-    "A native markdown workspace with **live preview**, *fast notes*, and handy section jumps.\n"
-    "\n"
-    "## Live Preview\n"
-    "\n"
-    "The Odin backend keeps the section list fresh while the GTK shell renders [the project repo](https://github.com/krisfur/markdown-buddy).\n"
-    "\n"
-    "> Write in plain markdown and get a calmer reading view beside the editor.\n"
-    "\n"
-    "## Next Steps\n"
-    "\n"
-    "- Open and save files\n"
-    "- Polish more markdown details like **bold**, *italic*, and `inline code`\n"
-    "- Keep section navigation feeling instant\n"
-    "\n"
-    "```\n"
-    "markdown-buddy --build linux\n"
-    "```\n";
+static void refresh_from_backend(AppWidgets *widgets);
+static void save_document_as(AppWidgets *widgets, gboolean close_after_save);
+static void choose_open_file(AppWidgets *widgets);
 
 static void load_css(void) {
     GtkCssProvider *provider = gtk_css_provider_new();
     gtk_css_provider_load_from_string(provider, APP_CSS);
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     g_object_unref(provider);
+}
+
+static const char *display_name_for_path(const gchar *path) {
+    const gchar *name;
+
+    if (path == NULL || *path == '\0') {
+        return "Untitled";
+    }
+
+    name = g_path_get_basename(path);
+    return name;
+}
+
+static void update_window_title(AppWidgets *widgets) {
+    gchar *basename;
+    gchar *title;
+
+    basename = widgets->current_path != NULL ? g_path_get_basename(widgets->current_path) : g_strdup("Untitled");
+    title = g_strdup_printf("%s%s - Markdown Buddy", basename, widgets->is_dirty ? " *" : "");
+    gtk_window_set_title(widgets->window, title);
+    g_free(title);
+    g_free(basename);
+}
+
+static void set_current_path(AppWidgets *widgets, const gchar *path) {
+    g_free(widgets->current_path);
+    widgets->current_path = path != NULL ? g_strdup(path) : NULL;
+    update_window_title(widgets);
+}
+
+static void set_dirty(AppWidgets *widgets, gboolean is_dirty) {
+    widgets->is_dirty = is_dirty;
+    update_window_title(widgets);
+}
+
+static void show_error_dialog(AppWidgets *widgets, const gchar *message) {
+    GtkAlertDialog *dialog = gtk_alert_dialog_new("%s", "Unable to complete action");
+    gtk_alert_dialog_set_detail(dialog, message);
+    gtk_alert_dialog_set_modal(dialog, TRUE);
+    gtk_alert_dialog_show(dialog, widgets->window);
+    g_object_unref(dialog);
 }
 
 static void clear_sections(AppWidgets *widgets) {
@@ -72,7 +103,7 @@ static void append_section_label(AppWidgets *widgets, const MbSection *section) 
     }
 
     if (section->title.data != NULL && section->title.length > 0) {
-        g_string_append_len(label, section->title.data, (gssize) section->title.length);
+        g_string_append_len(label, section->title.data, (gssize)section->title.length);
     } else {
         g_string_append(label, "(untitled)");
     }
@@ -103,7 +134,7 @@ static void jump_to_section(AppWidgets *widgets, guint position) {
         return;
     }
 
-    clamped = MIN((gsize) byte_offset, strlen(text));
+    clamped = MIN((gsize)byte_offset, strlen(text));
     char_offset = g_utf8_pointer_to_offset(text, text + clamped);
     gtk_text_buffer_get_iter_at_offset(widgets->editor_buffer, &iter, char_offset);
     gtk_text_buffer_place_cursor(widgets->editor_buffer, &iter);
@@ -159,6 +190,7 @@ static void append_span_markup(GString *markup, const MbInlineSpan *span) {
 
 static void append_block_inline_markup(GString *markup, const MbDocumentResult *result, const MbPreviewBlock *block) {
     size_t end = block->span_start + block->span_count;
+
     for (size_t i = block->span_start; i < end && i < result->span_count; ++i) {
         append_span_markup(markup, &result->spans[i]);
     }
@@ -197,9 +229,7 @@ static void append_block_gap(GString *markup, const MbPreviewBlock *previous, co
 }
 
 static void render_preview(GtkLabel *label, const MbDocumentResult *result) {
-    GString *markup;
-
-    markup = g_string_new(NULL);
+    GString *markup = g_string_new(NULL);
 
     if (result->block_count == 0) {
         g_string_append(markup, "<span foreground='#7f8da3'><i>Start writing markdown in the editor.</i></span>");
@@ -210,7 +240,7 @@ static void render_preview(GtkLabel *label, const MbDocumentResult *result) {
 
     for (size_t i = 0; i < result->block_count; ++i) {
         const MbPreviewBlock *block = &result->blocks[i];
-        const MbPreviewBlock *previous = i > 0 ? &result->blocks[i-1] : NULL;
+        const MbPreviewBlock *previous = i > 0 ? &result->blocks[i - 1] : NULL;
 
         append_block_gap(markup, previous, block);
 
@@ -260,33 +290,6 @@ static void render_preview(GtkLabel *label, const MbDocumentResult *result) {
     g_string_free(markup, TRUE);
 }
 
-static void section_item_setup(GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer user_data) {
-    GtkWidget *label = gtk_label_new(NULL);
-    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
-    gtk_label_set_wrap(GTK_LABEL(label), TRUE);
-    gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
-    gtk_widget_set_halign(label, GTK_ALIGN_FILL);
-    gtk_widget_set_hexpand(label, TRUE);
-    gtk_label_set_lines(GTK_LABEL(label), 4);
-    gtk_list_item_set_child(list_item, label);
-    (void) factory;
-    (void) user_data;
-}
-
-static void section_item_bind(GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer user_data) {
-    GtkWidget *label = gtk_list_item_get_child(list_item);
-    GtkStringObject *item = GTK_STRING_OBJECT(gtk_list_item_get_item(list_item));
-    gtk_label_set_text(GTK_LABEL(label), gtk_string_object_get_string(item));
-    (void) factory;
-    (void) user_data;
-}
-
-static void section_activated(GtkListView *view, guint position, gpointer user_data) {
-    AppWidgets *widgets = user_data;
-    (void) view;
-    jump_to_section(widgets, position);
-}
-
 static void refresh_from_backend(AppWidgets *widgets) {
     GtkTextIter start;
     GtkTextIter end;
@@ -325,13 +328,246 @@ static void schedule_refresh(AppWidgets *widgets) {
     if (widgets->refresh_source_id != 0) {
         g_source_remove(widgets->refresh_source_id);
     }
-
     widgets->refresh_source_id = g_timeout_add(120, delayed_refresh, widgets);
+}
+
+static gboolean load_document_from_path(AppWidgets *widgets, const gchar *path) {
+    gchar *contents = NULL;
+    gsize length = 0;
+    GError *error = NULL;
+    gchar *resolved;
+
+    if (!g_file_get_contents(path, &contents, &length, &error)) {
+        gchar *message = g_strdup_printf("Unable to open file:\n%s", error->message);
+        show_error_dialog(widgets, message);
+        g_free(message);
+        g_clear_error(&error);
+        return FALSE;
+    }
+
+    widgets->is_loading_document = TRUE;
+    gtk_text_buffer_set_text(widgets->editor_buffer, contents, (gint)length);
+    widgets->is_loading_document = FALSE;
+
+    resolved = g_canonicalize_filename(path, NULL);
+    set_current_path(widgets, resolved);
+    set_dirty(widgets, FALSE);
+    refresh_from_backend(widgets);
+
+    g_free(resolved);
+    g_free(contents);
+    return TRUE;
+}
+
+static gboolean save_document_to_path(AppWidgets *widgets, const gchar *path) {
+    GtkTextIter start;
+    GtkTextIter end;
+    gchar *text;
+    GError *error = NULL;
+    gchar *resolved;
+
+    gtk_text_buffer_get_bounds(widgets->editor_buffer, &start, &end);
+    text = gtk_text_buffer_get_text(widgets->editor_buffer, &start, &end, FALSE);
+
+    if (!g_file_set_contents(path, text != NULL ? text : "", -1, &error)) {
+        gchar *message = g_strdup_printf("Unable to save file:\n%s", error->message);
+        show_error_dialog(widgets, message);
+        g_free(message);
+        g_clear_error(&error);
+        g_free(text);
+        return FALSE;
+    }
+
+    resolved = g_canonicalize_filename(path, NULL);
+    set_current_path(widgets, resolved);
+    set_dirty(widgets, FALSE);
+
+    if (widgets->close_after_save) {
+        widgets->close_after_save = FALSE;
+        gtk_window_destroy(widgets->window);
+    }
+
+    g_free(resolved);
+    g_free(text);
+    return TRUE;
+}
+
+static GListModel *create_markdown_filters(void) {
+    GListStore *filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+    GtkFileFilter *markdown = gtk_file_filter_new();
+    GtkFileFilter *all_files = gtk_file_filter_new();
+
+    gtk_file_filter_set_name(markdown, "Markdown files");
+    gtk_file_filter_add_pattern(markdown, "*.md");
+    gtk_file_filter_add_pattern(markdown, "*.markdown");
+    g_list_store_append(filters, markdown);
+
+    gtk_file_filter_set_name(all_files, "All files");
+    gtk_file_filter_add_pattern(all_files, "*");
+    g_list_store_append(filters, all_files);
+
+    g_object_unref(markdown);
+    g_object_unref(all_files);
+    return G_LIST_MODEL(filters);
+}
+
+static void save_dialog_response(GObject *source_object, GAsyncResult *result, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    GtkFileDialog *dialog = GTK_FILE_DIALOG(source_object);
+    GError *error = NULL;
+    GFile *file = gtk_file_dialog_save_finish(dialog, result, &error);
+
+    if (file != NULL) {
+        gchar *path = g_file_get_path(file);
+        save_document_to_path(widgets, path);
+        g_free(path);
+        g_object_unref(file);
+    } else if (!g_error_matches(error, GTK_DIALOG_ERROR, GTK_DIALOG_ERROR_DISMISSED)) {
+        gchar *message = g_strdup_printf("Unable to choose save location:\n%s", error->message);
+        show_error_dialog(widgets, message);
+        g_free(message);
+    } else {
+        widgets->close_after_save = FALSE;
+    }
+
+    g_clear_error(&error);
+}
+
+static void save_document_as(AppWidgets *widgets, gboolean close_after_save) {
+    GtkFileDialog *dialog = gtk_file_dialog_new();
+    GListModel *filters = create_markdown_filters();
+
+    gtk_file_dialog_set_title(dialog, "Save Markdown File");
+    gtk_file_dialog_set_modal(dialog, TRUE);
+    gtk_file_dialog_set_filters(dialog, filters);
+    gtk_file_dialog_set_default_filter(dialog, GTK_FILE_FILTER(g_list_model_get_item(filters, 0)));
+    gtk_file_dialog_set_initial_name(dialog, widgets->current_path != NULL ? display_name_for_path(widgets->current_path) : "untitled.md");
+
+    if (widgets->current_path != NULL) {
+        GFile *file = g_file_new_for_path(widgets->current_path);
+        gtk_file_dialog_set_initial_file(dialog, file);
+        g_object_unref(file);
+    }
+
+    widgets->close_after_save = close_after_save;
+    gtk_file_dialog_save(dialog, widgets->window, NULL, save_dialog_response, widgets);
+    g_object_unref(filters);
+    g_object_unref(dialog);
+}
+
+static void maybe_save_document(AppWidgets *widgets, gboolean close_after_save) {
+    if (widgets->current_path != NULL) {
+        widgets->close_after_save = close_after_save;
+        if (!save_document_to_path(widgets, widgets->current_path)) {
+            widgets->close_after_save = FALSE;
+        }
+        return;
+    }
+
+    save_document_as(widgets, close_after_save);
+}
+
+static void open_dialog_response(GObject *source_object, GAsyncResult *result, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    GtkFileDialog *dialog = GTK_FILE_DIALOG(source_object);
+    GError *error = NULL;
+    GFile *file = gtk_file_dialog_open_finish(dialog, result, &error);
+
+    if (file != NULL) {
+        gchar *path = g_file_get_path(file);
+        load_document_from_path(widgets, path);
+        g_free(path);
+        g_object_unref(file);
+    } else if (!g_error_matches(error, GTK_DIALOG_ERROR, GTK_DIALOG_ERROR_DISMISSED)) {
+        gchar *message = g_strdup_printf("Unable to open file chooser:\n%s", error->message);
+        show_error_dialog(widgets, message);
+        g_free(message);
+    }
+
+    g_clear_error(&error);
+}
+
+static void choose_open_file(AppWidgets *widgets) {
+    GtkFileDialog *dialog = gtk_file_dialog_new();
+    GListModel *filters = create_markdown_filters();
+
+    gtk_file_dialog_set_title(dialog, "Open Markdown File");
+    gtk_file_dialog_set_modal(dialog, TRUE);
+    gtk_file_dialog_set_filters(dialog, filters);
+    gtk_file_dialog_set_default_filter(dialog, GTK_FILE_FILTER(g_list_model_get_item(filters, 0)));
+
+    gtk_file_dialog_open(dialog, widgets->window, NULL, open_dialog_response, widgets);
+    g_object_unref(filters);
+    g_object_unref(dialog);
+}
+
+static void close_confirm_response(GObject *source_object, GAsyncResult *result, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    GtkAlertDialog *dialog = GTK_ALERT_DIALOG(source_object);
+    GError *error = NULL;
+    int response = gtk_alert_dialog_choose_finish(dialog, result, &error);
+
+    if (error != NULL) {
+        g_clear_error(&error);
+        return;
+    }
+
+    if (response == 2) {
+        maybe_save_document(widgets, TRUE);
+    } else if (response == 1) {
+        gtk_window_destroy(widgets->window);
+    }
+}
+
+static gboolean confirm_discard_changes(AppWidgets *widgets) {
+    GtkAlertDialog *dialog;
+    const char *buttons[] = {"Cancel", "Discard", "Save", NULL};
+
+    if (!widgets->is_dirty) {
+        return FALSE;
+    }
+
+    dialog = gtk_alert_dialog_new("%s", "Save changes before closing?");
+    gtk_alert_dialog_set_detail(dialog, "Your current document has unsaved changes.");
+    gtk_alert_dialog_set_buttons(dialog, buttons);
+    gtk_alert_dialog_set_cancel_button(dialog, 0);
+    gtk_alert_dialog_set_default_button(dialog, 2);
+    gtk_alert_dialog_set_modal(dialog, TRUE);
+    gtk_alert_dialog_choose(dialog, widgets->window, NULL, close_confirm_response, widgets);
+    g_object_unref(dialog);
+    return TRUE;
+}
+
+static void open_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    (void)action;
+    (void)parameter;
+    choose_open_file(widgets);
+}
+
+static void save_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    (void)action;
+    (void)parameter;
+    maybe_save_document(widgets, FALSE);
+}
+
+static void save_as_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    (void)action;
+    (void)parameter;
+    save_document_as(widgets, FALSE);
 }
 
 static void editor_changed(GtkTextBuffer *buffer, gpointer user_data) {
     AppWidgets *widgets = user_data;
-    (void) buffer;
+    (void)buffer;
+
+    if (widgets->is_loading_document) {
+        return;
+    }
+
+    set_dirty(widgets, TRUE);
     schedule_refresh(widgets);
 }
 
@@ -347,6 +583,33 @@ static GtkWidget *wrap_panel(const char *title_text, GtkWidget *child, const cha
     gtk_box_append(GTK_BOX(panel), header);
     gtk_box_append(GTK_BOX(panel), child);
     return panel;
+}
+
+static void section_item_setup(GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer user_data) {
+    GtkWidget *label = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+    gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+    gtk_widget_set_halign(label, GTK_ALIGN_FILL);
+    gtk_widget_set_hexpand(label, TRUE);
+    gtk_label_set_lines(GTK_LABEL(label), 4);
+    gtk_list_item_set_child(list_item, label);
+    (void)factory;
+    (void)user_data;
+}
+
+static void section_item_bind(GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer user_data) {
+    GtkWidget *label = gtk_list_item_get_child(list_item);
+    GtkStringObject *item = GTK_STRING_OBJECT(gtk_list_item_get_item(list_item));
+    gtk_label_set_text(GTK_LABEL(label), gtk_string_object_get_string(item));
+    (void)factory;
+    (void)user_data;
+}
+
+static void section_activated(GtkListView *view, guint position, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    (void)view;
+    jump_to_section(widgets, position);
 }
 
 static GtkWidget *build_sections_sidebar(AppWidgets *widgets) {
@@ -419,24 +682,72 @@ static GtkWidget *build_preview_pane(AppWidgets *widgets) {
     return scroll;
 }
 
-static void activate(GtkApplication *app, gpointer user_data) {
+static GtkWidget *build_menu_bar(void) {
+    GMenu *root = g_menu_new();
+    GMenu *file = g_menu_new();
+
+    g_menu_append(file, "Open", "app.open");
+    g_menu_append(file, "Save", "app.save");
+    g_menu_append(file, "Save As", "app.save-as");
+    g_menu_append_submenu(root, "File", G_MENU_MODEL(file));
+
+    g_object_unref(file);
+    return gtk_popover_menu_bar_new_from_model(G_MENU_MODEL(root));
+}
+
+static gboolean on_close_request(GtkWindow *window, gpointer user_data) {
     AppWidgets *widgets = user_data;
+    (void)window;
+    return confirm_discard_changes(widgets);
+}
+
+static void install_actions(AppWidgets *widgets) {
+    const GActionEntry app_actions[] = {
+        {"open", open_action, NULL, NULL, NULL},
+        {"save", save_action, NULL, NULL, NULL},
+        {"save-as", save_as_action, NULL, NULL, NULL},
+    };
+
+    g_action_map_add_action_entries(G_ACTION_MAP(widgets->app), app_actions, G_N_ELEMENTS(app_actions), widgets);
+    gtk_application_set_accels_for_action(widgets->app, "app.open", (const char *[]) {"<Primary>o", NULL});
+    gtk_application_set_accels_for_action(widgets->app, "app.save", (const char *[]) {"<Primary>s", NULL});
+    gtk_application_set_accels_for_action(widgets->app, "app.save-as", (const char *[]) {"<Primary><Shift>s", NULL});
+}
+
+static void ensure_window(AppWidgets *widgets, GtkApplication *app) {
     GtkWidget *window;
+    GtkWidget *shell;
+    GtkWidget *menu_bar;
     GtkWidget *outer;
     GtkWidget *sidebar;
     GtkWidget *panes;
     GtkWidget *editor;
     GtkWidget *preview;
 
+    if (widgets->window != NULL) {
+        return;
+    }
+
+    widgets->app = app;
     window = gtk_application_window_new(app);
-    gtk_window_set_title(GTK_WINDOW(window), "Markdown Buddy");
+    widgets->window = GTK_WINDOW(window);
+
     gtk_window_set_default_size(GTK_WINDOW(window), 1280, 800);
     load_css();
+    install_actions(widgets);
+    g_signal_connect(window, "close-request", G_CALLBACK(on_close_request), widgets);
+
+    shell = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(shell, "root-shell");
+
+    menu_bar = build_menu_bar();
+    gtk_widget_add_css_class(menu_bar, "app-menu");
+    gtk_box_append(GTK_BOX(shell), menu_bar);
 
     outer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_hexpand(outer, TRUE);
     gtk_widget_set_vexpand(outer, TRUE);
-    gtk_widget_add_css_class(outer, "root-shell");
+    gtk_box_append(GTK_BOX(shell), outer);
 
     sidebar = build_sections_sidebar(widgets);
     gtk_widget_set_size_request(sidebar, 240, -1);
@@ -453,17 +764,49 @@ static void activate(GtkApplication *app, gpointer user_data) {
 
     editor = wrap_panel("Editor", build_editor_pane(widgets), "content-panel");
     preview = wrap_panel("Preview", build_preview_pane(widgets), "content-panel");
-
     gtk_paned_set_start_child(GTK_PANED(panes), editor);
     gtk_paned_set_end_child(GTK_PANED(panes), preview);
     gtk_paned_set_position(GTK_PANED(panes), 530);
-
     gtk_box_append(GTK_BOX(outer), panes);
-    gtk_window_set_child(GTK_WINDOW(window), outer);
 
-    gtk_text_buffer_set_text(widgets->editor_buffer, DEFAULT_DOCUMENT, -1);
+    gtk_window_set_child(GTK_WINDOW(window), shell);
+
+    widgets->is_loading_document = TRUE;
+    gtk_text_buffer_set_text(widgets->editor_buffer, "", -1);
+    widgets->is_loading_document = FALSE;
+    set_current_path(widgets, NULL);
+    set_dirty(widgets, FALSE);
     refresh_from_backend(widgets);
-    gtk_window_present(GTK_WINDOW(window));
+}
+
+static void activate(GtkApplication *app, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    ensure_window(widgets, app);
+    gtk_window_present(widgets->window);
+}
+
+static void open_files(GtkApplication *app, GFile **files, gint n_files, const gchar *hint, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    gchar *path;
+
+    (void)hint;
+    ensure_window(widgets, app);
+
+    if (n_files > 1) {
+        show_error_dialog(widgets, "Only one markdown file can be opened at a time.");
+        gtk_window_present(widgets->window);
+        return;
+    }
+
+    if (n_files == 1) {
+        path = g_file_get_path(files[0]);
+        if (path != NULL) {
+            load_document_from_path(widgets, path);
+            g_free(path);
+        }
+    }
+
+    gtk_window_present(widgets->window);
 }
 
 int main(int argc, char **argv) {
@@ -471,8 +814,14 @@ int main(int argc, char **argv) {
     GtkApplication *app;
     int status;
 
-    app = gtk_application_new("dev.markdownbuddy.linux", G_APPLICATION_DEFAULT_FLAGS);
+    if (argc > 2) {
+        g_printerr("Usage: %s [path-to-markdown-file]\n", argv[0]);
+        return 1;
+    }
+
+    app = gtk_application_new("dev.markdownbuddy.linux", G_APPLICATION_HANDLES_OPEN);
     g_signal_connect(app, "activate", G_CALLBACK(activate), &widgets);
+    g_signal_connect(app, "open", G_CALLBACK(open_files), &widgets);
     status = g_application_run(G_APPLICATION(app), argc, argv);
 
     if (widgets.refresh_source_id != 0) {
@@ -484,9 +833,7 @@ int main(int argc, char **argv) {
     if (widgets.sections_model != NULL && G_IS_OBJECT(widgets.sections_model)) {
         g_object_unref(widgets.sections_model);
     }
-    if (app != NULL && G_IS_OBJECT(app)) {
-        g_object_unref(app);
-    }
-
+    g_free(widgets.current_path);
+    g_object_unref(app);
     return status;
 }
