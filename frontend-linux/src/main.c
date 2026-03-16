@@ -36,7 +36,7 @@ static const char *APP_CSS =
     ".panel-header { padding: 12px 16px; border-bottom: 1px solid rgba(129, 161, 193, 0.14); background: rgba(44, 57, 79, 0.94); border-top-left-radius: 16px; border-top-right-radius: 16px; }"
     ".panel-title { font-family: 'IBM Plex Sans', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: #9daccb; }"
     ".panel-body { padding: 10px; }"
-    ".sidebar-list { padding: 6px; background: transparent; color: #c5d1e6; }"
+    ".sidebar-list { padding: 0; margin: 0; background: transparent; color: #c5d1e6; }"
     ".editor-view, .preview-view { background: #273142; color: #d6deeb; caret-color: #a3be8c; }"
     ".editor-view text selection, .preview-view selection { background-color: rgba(129, 161, 193, 0.35); }"
     "paned > separator { background: rgba(129, 161, 193, 0.2); min-width: 2px; }";
@@ -107,11 +107,13 @@ static void clear_sections(AppWidgets *widgets) {
     if (widgets->section_offsets != NULL) {
         g_array_set_size(widgets->section_offsets, 0);
     }
+
 }
 
-static void append_section_label(AppWidgets *widgets, const MbSection *section) {
+static void append_section_label(AppWidgets *widgets, const MbSection *section, gint previous_level) {
     GString *label = g_string_new(NULL);
     gint offset = section->source_offset;
+    (void) previous_level;
 
     for (gint i = 1; i < section->level; ++i) {
         g_string_append(label, "  ");
@@ -319,8 +321,10 @@ static void refresh_from_backend(AppWidgets *widgets) {
     clear_sections(widgets);
 
     if (status == MB_STATUS_OK) {
+        gint previous_level = 0;
         for (size_t i = 0; i < result.section_count; ++i) {
-            append_section_label(widgets, &result.sections[i]);
+            append_section_label(widgets, &result.sections[i], previous_level);
+            previous_level = result.sections[i].level;
         }
         render_preview(GTK_LABEL(widgets->preview_label), &result);
         mb_free_document_result(&result);
@@ -768,7 +772,11 @@ static void section_item_setup(GtkSignalListItemFactory *factory, GtkListItem *l
     gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
     gtk_widget_set_halign(label, GTK_ALIGN_FILL);
     gtk_widget_set_hexpand(label, TRUE);
+    gtk_widget_set_margin_start(label, 0);
+    gtk_widget_set_margin_end(label, 0);
     gtk_label_set_lines(GTK_LABEL(label), 4);
+    gtk_widget_set_margin_top(label, 4);
+    gtk_widget_set_margin_bottom(label, 4);
     gtk_list_item_set_child(list_item, label);
     (void)factory;
     (void)user_data;
@@ -811,6 +819,7 @@ static GtkWidget *build_sections_sidebar(AppWidgets *widgets) {
     gtk_widget_set_vexpand(scroll, TRUE);
     gtk_widget_add_css_class(scroll, "panel-body");
     gtk_widget_add_css_class(list_view, "sidebar-list");
+    gtk_scrolled_window_set_has_frame(GTK_SCROLLED_WINDOW(scroll), FALSE);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), list_view);
 
     return wrap_panel("Sections", scroll, "sidebar-panel");

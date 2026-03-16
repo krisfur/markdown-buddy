@@ -48,6 +48,7 @@ Mb_Inline_Span :: struct {
 Mb_Preview_Block :: struct {
     kind: c.int,
     level: c.int,
+    source_offset: c.int,
     span_start: c.size_t,
     span_count: c.size_t,
     text: Mb_String,
@@ -77,6 +78,7 @@ Internal_Span :: struct {
 Internal_Block :: struct {
     kind: Mb_Block_Kind,
     level: int,
+    source_offset: int,
     span_start: int,
     span_count: int,
     text: string,
@@ -367,7 +369,7 @@ make_preview_model :: proc(input: string, sections: ^Section_Buffer, spans: ^Spa
     if line_is_blank(input) {
         local_start := spans.count
         if !parse_inline_into(PREVIEW_EMPTY, spans) { return false }
-        return append_block_internal(blocks, Internal_Block{kind = .PARAGRAPH, span_start = local_start, span_count = spans.count - local_start})
+        return append_block_internal(blocks, Internal_Block{kind = .PARAGRAPH, source_offset = 0, span_start = local_start, span_count = spans.count - local_start})
     }
 
     index := 0
@@ -409,7 +411,7 @@ make_preview_model :: proc(input: string, sections: ^Section_Buffer, spans: ^Spa
                 index = sub_end + 1
                 code_end = sub_end
             }
-            if !append_block_internal(blocks, Internal_Block{kind = .CODE_BLOCK, text = input[code_start:code_end]}) { return false }
+            if !append_block_internal(blocks, Internal_Block{kind = .CODE_BLOCK, source_offset = line_start, text = input[code_start:code_end]}) { return false }
             continue
         }
 
@@ -418,7 +420,7 @@ make_preview_model :: proc(input: string, sections: ^Section_Buffer, spans: ^Spa
             if !append_section_internal(sections, Internal_Section{level = level, source_offset = line_start, title = title}) { return false }
             span_start := spans.count
             if !parse_inline_into(title, spans) { return false }
-            if !append_block_internal(blocks, Internal_Block{kind = .HEADING, level = level, span_start = span_start, span_count = spans.count - span_start}) { return false }
+            if !append_block_internal(blocks, Internal_Block{kind = .HEADING, level = level, source_offset = line_start, span_start = span_start, span_count = spans.count - span_start}) { return false }
             index = line_end + 1
             continue
         }
@@ -427,7 +429,7 @@ make_preview_model :: proc(input: string, sections: ^Section_Buffer, spans: ^Spa
         if is_list {
             span_start := spans.count
             if !parse_inline_into(item, spans) { return false }
-            if !append_block_internal(blocks, Internal_Block{kind = .LIST_ITEM, span_start = span_start, span_count = spans.count - span_start}) { return false }
+            if !append_block_internal(blocks, Internal_Block{kind = .LIST_ITEM, source_offset = line_start, span_start = span_start, span_count = spans.count - span_start}) { return false }
             index = line_end + 1
             continue
         }
@@ -436,7 +438,7 @@ make_preview_model :: proc(input: string, sections: ^Section_Buffer, spans: ^Spa
         if is_quote {
             span_start := spans.count
             if !parse_inline_into(quote, spans) { return false }
-            if !append_block_internal(blocks, Internal_Block{kind = .BLOCKQUOTE, span_start = span_start, span_count = spans.count - span_start}) { return false }
+            if !append_block_internal(blocks, Internal_Block{kind = .BLOCKQUOTE, source_offset = line_start, span_start = span_start, span_count = spans.count - span_start}) { return false }
             index = line_end + 1
             continue
         }
@@ -444,7 +446,7 @@ make_preview_model :: proc(input: string, sections: ^Section_Buffer, spans: ^Spa
         normalized := trim_ascii_space(line)
         span_start := spans.count
         if !parse_inline_into(normalized, spans) { return false }
-        if !append_block_internal(blocks, Internal_Block{kind = .PARAGRAPH, span_start = span_start, span_count = spans.count - span_start}) { return false }
+        if !append_block_internal(blocks, Internal_Block{kind = .PARAGRAPH, source_offset = line_start, span_start = span_start, span_count = spans.count - span_start}) { return false }
         index = line_end + 1
     }
 
@@ -513,6 +515,7 @@ copy_blocks :: proc(values: Block_Buffer, out_result: ^Mb_Document_Result) -> bo
         items[i] = Mb_Preview_Block{
             kind = c.int(value.kind),
             level = c.int(value.level),
+            source_offset = c.int(value.source_offset),
             span_start = c.size_t(value.span_start),
             span_count = c.size_t(value.span_count),
             text = clone_string(value.text),

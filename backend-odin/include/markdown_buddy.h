@@ -50,6 +50,7 @@ typedef struct MbInlineSpan {
 typedef struct MbPreviewBlock {
     int32_t kind;
     int32_t level;
+    int32_t source_offset;
     size_t span_start;
     size_t span_count;
     MbString text;
