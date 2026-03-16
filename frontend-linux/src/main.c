@@ -113,254 +113,149 @@ static void jump_to_section(AppWidgets *widgets, guint position) {
     g_free(text);
 }
 
-static gboolean line_is_blank(const char *line) {
-    while (*line != '\0') {
-        if (!g_ascii_isspace(*line)) {
-            return FALSE;
-        }
-        ++line;
-    }
-    return TRUE;
-}
-
-static gboolean parse_heading(const char *line, int *level_out, const char **title_out) {
-    int level = 0;
-
-    while (line[level] == '#') {
-        ++level;
-    }
-
-    if (level == 0 || level > 6 || line[level] != ' ') {
-        return FALSE;
-    }
-
-    *level_out = level;
-    *title_out = line + level + 1;
-    return TRUE;
-}
-
-static gboolean parse_list_item(const char *line, const char **item_out) {
-    while (*line == ' ' || *line == '\t') {
-        ++line;
-    }
-
-    if ((line[0] == '-' || line[0] == '*') && line[1] == ' ') {
-        *item_out = line + 2;
-        return TRUE;
-    }
-
-    return FALSE;
-}
-
-static gboolean parse_blockquote(const char *line, const char **quote_out) {
-    while (*line == ' ' || *line == '\t') {
-        ++line;
-    }
-
-    if (*line != '>') {
-        return FALSE;
-    }
-
-    ++line;
-    if (*line == ' ') {
-        ++line;
-    }
-
-    *quote_out = line;
-    return TRUE;
-}
-
 static void append_escaped_markup(GString *markup, const char *text) {
     gchar *escaped = g_markup_escape_text(text != NULL ? text : "", -1);
     g_string_append(markup, escaped);
     g_free(escaped);
 }
 
-static void append_inline_markup(GString *markup, const char *text) {
-    const char *cursor = text;
+static void append_span_markup(GString *markup, const MbInlineSpan *span) {
+    gchar *text = g_strndup(span->text.data != NULL ? span->text.data : "", span->text.length);
 
-    while (cursor != NULL && *cursor != '\0') {
-        const char *next_tick = strchr(cursor, '`');
-        const char *next_bold = strstr(cursor, "**");
-        const char *next_link = strchr(cursor, '[');
-        const char *next_italic = strchr(cursor, '*');
-        const char *next = NULL;
+    switch (span->kind) {
+    case MB_INLINE_EMPHASIS:
+        g_string_append(markup, "<i>");
+        append_escaped_markup(markup, text);
+        g_string_append(markup, "</i>");
+        break;
+    case MB_INLINE_STRONG:
+        g_string_append(markup, "<b>");
+        append_escaped_markup(markup, text);
+        g_string_append(markup, "</b>");
+        break;
+    case MB_INLINE_CODE:
+        g_string_append(markup, "<span foreground='#8caaee' background='#39465e'><tt>");
+        append_escaped_markup(markup, text);
+        g_string_append(markup, "</tt></span>");
+        break;
+    case MB_INLINE_LINK: {
+        gchar *href = g_strndup(span->href.data != NULL ? span->href.data : "", span->href.length);
+        gchar *escaped_href = g_markup_escape_text(href, -1);
+        g_string_append_printf(markup, "<span foreground='#7fc1ff'><a href=\"%s\">", escaped_href);
+        append_escaped_markup(markup, text);
+        g_string_append(markup, "</a></span>");
+        g_free(escaped_href);
+        g_free(href);
+        break;
+    }
+    case MB_INLINE_TEXT:
+    default:
+        append_escaped_markup(markup, text);
+        break;
+    }
 
-        if (next_bold != NULL && (next == NULL || next_bold < next)) {
-            next = next_bold;
-        }
-        if (next_tick != NULL && (next == NULL || next_tick < next)) {
-            next = next_tick;
-        }
-        if (next_link != NULL && (next == NULL || next_link < next)) {
-            next = next_link;
-        }
-        if (next_italic != NULL && (next == NULL || next_italic < next)) {
-            next = next_italic;
-        }
+    g_free(text);
+}
 
-        if (next == NULL) {
-            append_escaped_markup(markup, cursor);
-            return;
-        }
-
-        if (next > cursor) {
-            gchar *prefix = g_strndup(cursor, next - cursor);
-            append_escaped_markup(markup, prefix);
-            g_free(prefix);
-            cursor = next;
-        }
-
-        if (g_str_has_prefix(cursor, "**")) {
-            const char *end = strstr(cursor + 2, "**");
-            if (end != NULL && end > cursor + 2) {
-                gchar *bold = g_strndup(cursor + 2, end - (cursor + 2));
-                g_string_append(markup, "<b>");
-                append_inline_markup(markup, bold);
-                g_string_append(markup, "</b>");
-                g_free(bold);
-                cursor = end + 2;
-                continue;
-            }
-        }
-
-        if (*cursor == '*' && !g_str_has_prefix(cursor, "**")) {
-            const char *end = strchr(cursor + 1, '*');
-            if (end != NULL && end > cursor + 1) {
-                gchar *italic = g_strndup(cursor + 1, end - (cursor + 1));
-                g_string_append(markup, "<i>");
-                append_inline_markup(markup, italic);
-                g_string_append(markup, "</i>");
-                g_free(italic);
-                cursor = end + 1;
-                continue;
-            }
-        }
-
-        if (*cursor == '`') {
-            const char *end = strchr(cursor + 1, '`');
-            if (end != NULL && end > cursor + 1) {
-                gchar *code = g_strndup(cursor + 1, end - (cursor + 1));
-                g_string_append(markup, "<span foreground='#8caaee' background='#39465e'><tt>");
-                append_escaped_markup(markup, code);
-                g_string_append(markup, "</tt></span>");
-                g_free(code);
-                cursor = end + 1;
-                continue;
-            }
-        }
-
-        if (*cursor == '[') {
-            const char *mid = strchr(cursor + 1, ']');
-            if (mid != NULL && mid[1] == '(') {
-                const char *end = strchr(mid + 2, ')');
-                if (end != NULL) {
-                    gchar *label = g_strndup(cursor + 1, mid - (cursor + 1));
-                    gchar *href = g_strndup(mid + 2, end - (mid + 2));
-                    gchar *escaped_href = g_markup_escape_text(href, -1);
-                    g_string_append_printf(markup, "<span foreground='#7fc1ff'><a href=\"%s\">", escaped_href);
-                    append_inline_markup(markup, label);
-                    g_string_append(markup, "</a></span>");
-                    g_free(escaped_href);
-                    g_free(label);
-                    g_free(href);
-                    cursor = end + 1;
-                    continue;
-                }
-            }
-        }
-
-        append_escaped_markup(markup, (gchar[2]) { *cursor, '\0' });
-        cursor += 1;
+static void append_block_inline_markup(GString *markup, const MbDocumentResult *result, const MbPreviewBlock *block) {
+    size_t end = block->span_start + block->span_count;
+    for (size_t i = block->span_start; i < end && i < result->span_count; ++i) {
+        append_span_markup(markup, &result->spans[i]);
     }
 }
 
-static void render_preview(GtkLabel *label, const char *markdown_text) {
-    gchar **lines;
-    gboolean in_code = FALSE;
+static gboolean block_is_tight(const MbPreviewBlock *block) {
+    return block->kind == MB_BLOCK_LIST_ITEM || block->kind == MB_BLOCK_BLOCKQUOTE;
+}
+
+static void append_block_gap(GString *markup, const MbPreviewBlock *previous, const MbPreviewBlock *current) {
+    if (previous == NULL) {
+        return;
+    }
+
+    if (block_is_tight(previous) && block_is_tight(current) && previous->kind == current->kind) {
+        g_string_append(markup, "\n");
+        return;
+    }
+
+    if (previous->kind == MB_BLOCK_HEADING || current->kind == MB_BLOCK_HEADING) {
+        g_string_append(markup, "\n\n");
+        return;
+    }
+
+    if (previous->kind == MB_BLOCK_CODE_BLOCK || current->kind == MB_BLOCK_CODE_BLOCK) {
+        g_string_append(markup, "\n\n");
+        return;
+    }
+
+    if (block_is_tight(previous) || block_is_tight(current)) {
+        g_string_append(markup, "\n\n");
+        return;
+    }
+
+    g_string_append(markup, "\n\n");
+}
+
+static void render_preview(GtkLabel *label, const MbDocumentResult *result) {
     GString *markup;
 
     markup = g_string_new(NULL);
 
-    if (markdown_text == NULL || *markdown_text == '\0') {
+    if (result->block_count == 0) {
         g_string_append(markup, "<span foreground='#7f8da3'><i>Start writing markdown in the editor.</i></span>");
         gtk_label_set_markup(label, markup->str);
         g_string_free(markup, TRUE);
         return;
     }
 
-    lines = g_strsplit(markdown_text, "\n", -1);
+    for (size_t i = 0; i < result->block_count; ++i) {
+        const MbPreviewBlock *block = &result->blocks[i];
+        const MbPreviewBlock *previous = i > 0 ? &result->blocks[i-1] : NULL;
 
-    for (gsize i = 0; lines[i] != NULL; ++i) {
-        const char *line = lines[i];
-        int level = 0;
-        const char *title = NULL;
-        const char *item = NULL;
-        const char *quote = NULL;
+        append_block_gap(markup, previous, block);
 
-        if (g_str_has_prefix(line, "```")) {
-            in_code = !in_code;
-            if (in_code) {
-                g_string_append(markup, "\n<span foreground='#a7c080' background='#1f2837'><tt>");
-            } else {
-                g_string_append(markup, "</tt></span>\n\n");
-            }
-            continue;
-        }
-
-        if (in_code) {
-            append_escaped_markup(markup, line);
-            g_string_append(markup, "\n");
-            continue;
-        }
-
-        if (parse_heading(line, &level, &title)) {
-            if (level == 1) {
+        switch (block->kind) {
+        case MB_BLOCK_HEADING:
+            if (block->level <= 1) {
                 g_string_append(markup, "<span foreground='#d6deeb'><big><big><b>");
-            } else if (level == 2) {
+            } else if (block->level == 2) {
                 g_string_append(markup, "<span foreground='#c7d2e0'><big><b>");
             } else {
                 g_string_append(markup, "<span foreground='#b8c4d8'><b>");
             }
-            append_inline_markup(markup, title);
-            if (level == 1) {
-                g_string_append(markup, "</b></big></big></span>\n");
-            } else if (level == 2) {
-                g_string_append(markup, "</b></big></span>\n");
+            append_block_inline_markup(markup, result, block);
+            if (block->level <= 1) {
+                g_string_append(markup, "</b></big></big></span>");
+            } else if (block->level == 2) {
+                g_string_append(markup, "</b></big></span>");
             } else {
-                g_string_append(markup, "</b></span>\n");
+                g_string_append(markup, "</b></span>");
             }
-            continue;
-        }
-
-        if (parse_list_item(line, &item)) {
+            break;
+        case MB_BLOCK_LIST_ITEM:
             g_string_append(markup, "<span foreground='#81a1c1'>•</span> ");
-            append_inline_markup(markup, item);
-            g_string_append(markup, "\n");
-            continue;
-        }
-
-        if (parse_blockquote(line, &quote)) {
+            append_block_inline_markup(markup, result, block);
+            break;
+        case MB_BLOCK_BLOCKQUOTE:
             g_string_append(markup, "<span foreground='#719cd6'>│</span> <span foreground='#9fb4d0'><i>");
-            append_inline_markup(markup, quote);
-            g_string_append(markup, "</i></span>\n");
-            continue;
+            append_block_inline_markup(markup, result, block);
+            g_string_append(markup, "</i></span>");
+            break;
+        case MB_BLOCK_CODE_BLOCK: {
+            gchar *text = g_strndup(block->text.data != NULL ? block->text.data : "", block->text.length);
+            g_string_append(markup, "<span foreground='#a7c080' background='#1f2837'><tt>");
+            append_escaped_markup(markup, text);
+            g_string_append(markup, "</tt></span>");
+            g_free(text);
+            break;
         }
-
-        if (line_is_blank(line)) {
-            g_string_append(markup, "\n");
-            continue;
+        case MB_BLOCK_PARAGRAPH:
+        default:
+            append_block_inline_markup(markup, result, block);
+            break;
         }
-
-        append_inline_markup(markup, line);
-        g_string_append(markup, "\n\n");
     }
 
-    if (in_code) {
-        g_string_append(markup, "</tt></span>");
-    }
-
-    g_strfreev(lines);
     gtk_label_set_markup(label, markup->str);
     g_string_free(markup, TRUE);
 }
@@ -396,7 +291,6 @@ static void refresh_from_backend(AppWidgets *widgets) {
     GtkTextIter start;
     GtkTextIter end;
     gchar *text;
-    gchar *preview_text;
     MbDocumentResult result = {0};
     MbStatus status;
 
@@ -410,13 +304,11 @@ static void refresh_from_backend(AppWidgets *widgets) {
         for (size_t i = 0; i < result.section_count; ++i) {
             append_section_label(widgets, &result.sections[i]);
         }
-        preview_text = g_strndup(result.preview_text.data != NULL ? result.preview_text.data : "", result.preview_text.length);
-        render_preview(GTK_LABEL(widgets->preview_label), preview_text);
-        g_free(preview_text);
+        render_preview(GTK_LABEL(widgets->preview_label), &result);
         mb_free_document_result(&result);
     } else {
         gtk_string_list_append(widgets->sections_model, "Backend error");
-        render_preview(GTK_LABEL(widgets->preview_label), "Unable to render preview.");
+        gtk_label_set_markup(GTK_LABEL(widgets->preview_label), "Unable to render preview.");
     }
 
     g_free(text);
