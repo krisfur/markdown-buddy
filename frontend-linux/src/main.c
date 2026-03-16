@@ -3,6 +3,14 @@
 
 #include "markdown_buddy.h"
 
+typedef enum PendingAction {
+    PENDING_ACTION_NONE = 0,
+    PENDING_ACTION_CLOSE,
+    PENDING_ACTION_NEW,
+    PENDING_ACTION_OPEN_DIALOG,
+    PENDING_ACTION_OPEN_PATH,
+} PendingAction;
+
 typedef struct AppWidgets {
     GtkApplication *app;
     GtkWindow *window;
@@ -12,10 +20,11 @@ typedef struct AppWidgets {
     GtkStringList *sections_model;
     GArray *section_offsets;
     gchar *current_path;
+    gchar *pending_path;
     guint refresh_source_id;
     gboolean is_dirty;
     gboolean is_loading_document;
-    gboolean close_after_save;
+    PendingAction pending_action;
 } AppWidgets;
 
 static const char *APP_CSS =
@@ -33,7 +42,7 @@ static const char *APP_CSS =
     "paned > separator { background: rgba(129, 161, 193, 0.2); min-width: 2px; }";
 
 static void refresh_from_backend(AppWidgets *widgets);
-static void save_document_as(AppWidgets *widgets, gboolean close_after_save);
+static void save_document_as(AppWidgets *widgets);
 static void choose_open_file(AppWidgets *widgets);
 
 static void load_css(void) {
@@ -74,6 +83,12 @@ static void set_current_path(AppWidgets *widgets, const gchar *path) {
 static void set_dirty(AppWidgets *widgets, gboolean is_dirty) {
     widgets->is_dirty = is_dirty;
     update_window_title(widgets);
+}
+
+static void set_pending_action(AppWidgets *widgets, PendingAction action, const gchar *path) {
+    widgets->pending_action = action;
+    g_free(widgets->pending_path);
+    widgets->pending_path = path != NULL ? g_strdup(path) : NULL;
 }
 
 static void show_error_dialog(AppWidgets *widgets, const gchar *message) {
@@ -359,6 +374,44 @@ static gboolean load_document_from_path(AppWidgets *widgets, const gchar *path) 
     return TRUE;
 }
 
+static void new_document(AppWidgets *widgets) {
+    widgets->is_loading_document = TRUE;
+    gtk_text_buffer_set_text(widgets->editor_buffer, "", -1);
+    widgets->is_loading_document = FALSE;
+    set_current_path(widgets, NULL);
+    set_dirty(widgets, FALSE);
+    refresh_from_backend(widgets);
+}
+
+static void perform_pending_action(AppWidgets *widgets) {
+    PendingAction action = widgets->pending_action;
+    gchar *path = widgets->pending_path != NULL ? g_strdup(widgets->pending_path) : NULL;
+
+    set_pending_action(widgets, PENDING_ACTION_NONE, NULL);
+
+    switch (action) {
+    case PENDING_ACTION_CLOSE:
+        gtk_window_destroy(widgets->window);
+        break;
+    case PENDING_ACTION_NEW:
+        new_document(widgets);
+        break;
+    case PENDING_ACTION_OPEN_DIALOG:
+        choose_open_file(widgets);
+        break;
+    case PENDING_ACTION_OPEN_PATH:
+        if (path != NULL) {
+            load_document_from_path(widgets, path);
+        }
+        break;
+    case PENDING_ACTION_NONE:
+    default:
+        break;
+    }
+
+    g_free(path);
+}
+
 static gboolean save_document_to_path(AppWidgets *widgets, const gchar *path) {
     GtkTextIter start;
     GtkTextIter end;
@@ -381,11 +434,7 @@ static gboolean save_document_to_path(AppWidgets *widgets, const gchar *path) {
     resolved = g_canonicalize_filename(path, NULL);
     set_current_path(widgets, resolved);
     set_dirty(widgets, FALSE);
-
-    if (widgets->close_after_save) {
-        widgets->close_after_save = FALSE;
-        gtk_window_destroy(widgets->window);
-    }
+    perform_pending_action(widgets);
 
     g_free(resolved);
     g_free(text);
@@ -427,13 +476,13 @@ static void save_dialog_response(GObject *source_object, GAsyncResult *result, g
         show_error_dialog(widgets, message);
         g_free(message);
     } else {
-        widgets->close_after_save = FALSE;
+        set_pending_action(widgets, PENDING_ACTION_NONE, NULL);
     }
 
     g_clear_error(&error);
 }
 
-static void save_document_as(AppWidgets *widgets, gboolean close_after_save) {
+static void save_document_as(AppWidgets *widgets) {
     GtkFileDialog *dialog = gtk_file_dialog_new();
     GListModel *filters = create_markdown_filters();
 
@@ -449,22 +498,20 @@ static void save_document_as(AppWidgets *widgets, gboolean close_after_save) {
         g_object_unref(file);
     }
 
-    widgets->close_after_save = close_after_save;
     gtk_file_dialog_save(dialog, widgets->window, NULL, save_dialog_response, widgets);
     g_object_unref(filters);
     g_object_unref(dialog);
 }
 
-static void maybe_save_document(AppWidgets *widgets, gboolean close_after_save) {
+static void maybe_save_document(AppWidgets *widgets) {
     if (widgets->current_path != NULL) {
-        widgets->close_after_save = close_after_save;
         if (!save_document_to_path(widgets, widgets->current_path)) {
-            widgets->close_after_save = FALSE;
+            set_pending_action(widgets, PENDING_ACTION_NONE, NULL);
         }
         return;
     }
 
-    save_document_as(widgets, close_after_save);
+    save_document_as(widgets);
 }
 
 static void open_dialog_response(GObject *source_object, GAsyncResult *result, gpointer user_data) {
@@ -501,6 +548,8 @@ static void choose_open_file(AppWidgets *widgets) {
     g_object_unref(dialog);
 }
 
+static gboolean request_document_replacement(AppWidgets *widgets, PendingAction action, const gchar *path);
+
 static void close_confirm_response(GObject *source_object, GAsyncResult *result, gpointer user_data) {
     AppWidgets *widgets = user_data;
     GtkAlertDialog *dialog = GTK_ALERT_DIALOG(source_object);
@@ -513,19 +562,23 @@ static void close_confirm_response(GObject *source_object, GAsyncResult *result,
     }
 
     if (response == 2) {
-        maybe_save_document(widgets, TRUE);
+        maybe_save_document(widgets);
     } else if (response == 1) {
-        gtk_window_destroy(widgets->window);
+        perform_pending_action(widgets);
+    } else {
+        set_pending_action(widgets, PENDING_ACTION_NONE, NULL);
     }
 }
 
-static gboolean confirm_discard_changes(AppWidgets *widgets) {
+static gboolean confirm_discard_changes(AppWidgets *widgets, PendingAction action, const gchar *path) {
     GtkAlertDialog *dialog;
     const char *buttons[] = {"Cancel", "Discard", "Save", NULL};
 
     if (!widgets->is_dirty) {
         return FALSE;
     }
+
+    set_pending_action(widgets, action, path);
 
     dialog = gtk_alert_dialog_new("%s", "Save changes before closing?");
     gtk_alert_dialog_set_detail(dialog, "Your current document has unsaved changes.");
@@ -538,25 +591,44 @@ static gboolean confirm_discard_changes(AppWidgets *widgets) {
     return TRUE;
 }
 
+static gboolean request_document_replacement(AppWidgets *widgets, PendingAction action, const gchar *path) {
+    if (widgets->is_dirty) {
+        return confirm_discard_changes(widgets, action, path);
+    }
+
+    set_pending_action(widgets, action, path);
+    perform_pending_action(widgets);
+    return FALSE;
+}
+
 static void open_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
     AppWidgets *widgets = user_data;
     (void)action;
     (void)parameter;
-    choose_open_file(widgets);
+    request_document_replacement(widgets, PENDING_ACTION_OPEN_DIALOG, NULL);
+}
+
+static void new_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    AppWidgets *widgets = user_data;
+    (void)action;
+    (void)parameter;
+    request_document_replacement(widgets, PENDING_ACTION_NEW, NULL);
 }
 
 static void save_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
     AppWidgets *widgets = user_data;
     (void)action;
     (void)parameter;
-    maybe_save_document(widgets, FALSE);
+    set_pending_action(widgets, PENDING_ACTION_NONE, NULL);
+    maybe_save_document(widgets);
 }
 
 static void save_as_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
     AppWidgets *widgets = user_data;
     (void)action;
     (void)parameter;
-    save_document_as(widgets, FALSE);
+    set_pending_action(widgets, PENDING_ACTION_NONE, NULL);
+    save_document_as(widgets);
 }
 
 static void editor_changed(GtkTextBuffer *buffer, gpointer user_data) {
@@ -686,6 +758,7 @@ static GtkWidget *build_menu_bar(void) {
     GMenu *root = g_menu_new();
     GMenu *file = g_menu_new();
 
+    g_menu_append(file, "New", "app.new");
     g_menu_append(file, "Open", "app.open");
     g_menu_append(file, "Save", "app.save");
     g_menu_append(file, "Save As", "app.save-as");
@@ -698,17 +771,19 @@ static GtkWidget *build_menu_bar(void) {
 static gboolean on_close_request(GtkWindow *window, gpointer user_data) {
     AppWidgets *widgets = user_data;
     (void)window;
-    return confirm_discard_changes(widgets);
+    return request_document_replacement(widgets, PENDING_ACTION_CLOSE, NULL);
 }
 
 static void install_actions(AppWidgets *widgets) {
     const GActionEntry app_actions[] = {
+        {"new", new_action, NULL, NULL, NULL},
         {"open", open_action, NULL, NULL, NULL},
         {"save", save_action, NULL, NULL, NULL},
         {"save-as", save_as_action, NULL, NULL, NULL},
     };
 
     g_action_map_add_action_entries(G_ACTION_MAP(widgets->app), app_actions, G_N_ELEMENTS(app_actions), widgets);
+    gtk_application_set_accels_for_action(widgets->app, "app.new", (const char *[]) {"<Primary>n", NULL});
     gtk_application_set_accels_for_action(widgets->app, "app.open", (const char *[]) {"<Primary>o", NULL});
     gtk_application_set_accels_for_action(widgets->app, "app.save", (const char *[]) {"<Primary>s", NULL});
     gtk_application_set_accels_for_action(widgets->app, "app.save-as", (const char *[]) {"<Primary><Shift>s", NULL});
@@ -801,7 +876,7 @@ static void open_files(GtkApplication *app, GFile **files, gint n_files, const g
     if (n_files == 1) {
         path = g_file_get_path(files[0]);
         if (path != NULL) {
-            load_document_from_path(widgets, path);
+            request_document_replacement(widgets, PENDING_ACTION_OPEN_PATH, path);
             g_free(path);
         }
     }
@@ -834,6 +909,7 @@ int main(int argc, char **argv) {
         g_object_unref(widgets.sections_model);
     }
     g_free(widgets.current_path);
+    g_free(widgets.pending_path);
     g_object_unref(app);
     return status;
 }
