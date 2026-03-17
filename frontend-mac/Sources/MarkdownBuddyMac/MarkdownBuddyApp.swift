@@ -3,7 +3,11 @@ import AppCore
 import AppKit
 import SwiftUI
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    weak var controller: MacDocumentController?
+    private var pendingURLs: [URL] = []
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
@@ -13,6 +17,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.level = .normal
             window.makeKeyAndOrderFront(nil)
         }
+
+        let launchURLs = CommandLine.arguments.dropFirst().map { URL(fileURLWithPath: $0) }
+        if !launchURLs.isEmpty {
+            handle(urls: launchURLs)
+        }
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        handle(urls: urls)
+    }
+
+    func attach(controller: MacDocumentController) {
+        self.controller = controller
+        flushPendingURLs()
+    }
+
+    private func handle(urls: [URL]) {
+        let fileURLs = urls.filter { $0.isFileURL }
+        guard !fileURLs.isEmpty else { return }
+        pendingURLs.append(contentsOf: fileURLs)
+        flushPendingURLs()
+    }
+
+    private func flushPendingURLs() {
+        guard let controller, let url = pendingURLs.first else { return }
+        pendingURLs.removeAll()
+        controller.openDocument(at: url.path)
     }
 }
 
@@ -25,6 +56,9 @@ struct MarkdownBuddyApp: App {
         WindowGroup {
             ContentView(controller: controller)
                 .frame(minWidth: 1100, minHeight: 760)
+                .onAppear {
+                    appDelegate.attach(controller: controller)
+                }
         }
         .commands {
             MarkdownBuddyCommands(controller: controller)

@@ -19,5 +19,5 @@ Made for educational purposes of learning how to combine a single backend with p
 Multi language setup:
 - Backend: `Odin` -> `C ABI`
 - Frontend Linux: `GTK4`
-- Frontend Mac: `SwiftUI` (to implement)
+- Frontend Mac: `SwiftUI`
 - Frontend Windows: `Win32` (to implement)

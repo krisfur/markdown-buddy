@@ -18,6 +18,7 @@ final class MacDocumentController: ObservableObject {
         case none
         case newDocument
         case openDocument
+        case openPath(String)
         case closeWindow
     }
 
@@ -65,6 +66,15 @@ final class MacDocumentController: ObservableObject {
         presentOpenPanel()
     }
 
+    func openDocument(at path: String) {
+        if core.isDirty {
+            pendingAction = .openPath(path)
+            showingUnsavedAlert = true
+            return
+        }
+        loadDocument(at: path)
+    }
+
     func quit() {
         if core.isDirty {
             pendingAction = .closeWindow
@@ -85,6 +95,8 @@ final class MacDocumentController: ObservableObject {
             core.newDocument()
         case .openDocument:
             presentOpenPanel()
+        case .openPath(let path):
+            loadDocument(at: path)
         case .closeWindow:
             NSApp.keyWindow?.performClose(nil)
         }
@@ -143,12 +155,16 @@ final class MacDocumentController: ObservableObject {
         panel.allowedContentTypes = [.markdownDocument, .plainText]
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let path = panel.url?.path {
-            do {
-                objectWillChange.send()
-                try core.load(from: path)
-            } catch {
-                NSApp.presentError(error)
-            }
+            loadDocument(at: path)
+        }
+    }
+
+    private func loadDocument(at path: String) {
+        do {
+            objectWillChange.send()
+            try core.load(from: path)
+        } catch {
+            NSApp.presentError(error)
         }
     }
 
