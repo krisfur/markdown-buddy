@@ -20,6 +20,7 @@ final class MacDocumentController: ObservableObject {
         case openDocument
         case openPath(String)
         case closeWindow
+        case terminateApp
     }
 
     var windowTitle: String {
@@ -76,12 +77,23 @@ final class MacDocumentController: ObservableObject {
     }
 
     func quit() {
-        if core.isDirty {
-            pendingAction = .closeWindow
-            showingUnsavedAlert = true
-            return
+        switch prepareForTermination() {
+        case .terminateNow:
+            NSApp.terminate(nil)
+        case .terminateLater, .terminateCancel:
+            break
+        @unknown default:
+            break
         }
-        NSApp.keyWindow?.performClose(nil)
+    }
+
+    func prepareForTermination() -> NSApplication.TerminateReply {
+        if core.isDirty {
+            pendingAction = .terminateApp
+            showingUnsavedAlert = true
+            return .terminateLater
+        }
+        return .terminateNow
     }
 
     func performPendingAction() {
@@ -99,10 +111,15 @@ final class MacDocumentController: ObservableObject {
             loadDocument(at: path)
         case .closeWindow:
             NSApp.keyWindow?.performClose(nil)
+        case .terminateApp:
+            NSApp.reply(toApplicationShouldTerminate: true)
         }
     }
 
     func cancelPendingAction() {
+        if case .terminateApp = pendingAction {
+            NSApp.reply(toApplicationShouldTerminate: false)
+        }
         pendingAction = .none
         showingUnsavedAlert = false
     }
@@ -118,6 +135,9 @@ final class MacDocumentController: ObservableObject {
             showingUnsavedAlert = false
             performPendingAction()
         } catch {
+            if case .terminateApp = pendingAction {
+                NSApp.reply(toApplicationShouldTerminate: false)
+            }
             NSApp.presentError(error)
         }
     }

@@ -32,6 +32,7 @@ mkdir -p "$DIST_DIR"
 
 odin build "$ROOT_DIR/backend-odin/src" \
     -build-mode:shared \
+    -minimum-os-version:14.0.0 \
     -no-entry-point \
     -out:"$DIST_DIR/libmarkdown_buddy.dylib"
 
