@@ -15,7 +15,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        activateApp()
+
+        for window in NSApp.windows {
+            window.collectionBehavior.remove(.transient)
+            window.level = .normal
+            window.makeKeyAndOrderFront(nil)
+        }
 
         let launchURLs = CommandLine.arguments.dropFirst().map { URL(fileURLWithPath: $0) }
         if !launchURLs.isEmpty {
@@ -33,20 +38,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func attach(controller: MacDocumentController) {
         self.controller = controller
-        flushPendingURLs()
     }
 
     func attach(window: NSWindow?) {
         guard let window, self.window !== window else { return }
         self.window = window
         window.delegate = self
-        window.collectionBehavior.remove(.transient)
-        window.level = .normal
-        activateApp()
+    }
+
+    func sceneDidAppear() {
         DispatchQueue.main.async {
             self.activateApp()
-            window.orderFrontRegardless()
-            window.makeKeyAndOrderFront(nil)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            self.flushPendingURLsIfPossible()
         }
     }
 
@@ -54,17 +59,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileURLs = urls.filter { $0.isFileURL }
         guard !fileURLs.isEmpty else { return }
         pendingURLs.append(contentsOf: fileURLs)
-        activateApp()
-        flushPendingURLs()
     }
 
-    private func flushPendingURLs() {
+    private func flushPendingURLsIfPossible() {
         guard let controller, let url = pendingURLs.first else { return }
         pendingURLs.removeAll()
         controller.openDocument(at: url.path)
     }
 
-    private func activateApp() {
+    func activateApp() {
         NSApp.activate(ignoringOtherApps: true)
         NSRunningApplication.current.activate(options: [.activateAllWindows])
     }
@@ -117,6 +120,7 @@ struct MarkdownBuddyApp: App {
                 })
                 .onAppear {
                     appDelegate.attach(controller: controller)
+                    appDelegate.sceneDidAppear()
                 }
         }
         .commands {
