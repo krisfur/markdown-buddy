@@ -4,6 +4,10 @@ import AppKit
 import Foundation
 import UniformTypeIdentifiers
 
+private extension UTType {
+    static let markdownDocument = UTType(filenameExtension: "md") ?? .plainText
+}
+
 @MainActor
 final class MacDocumentController: ObservableObject {
     @Published private(set) var core = DocumentController()
@@ -126,7 +130,7 @@ final class MacDocumentController: ObservableObject {
 
     func saveAs() throws {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.markdown, .plainText]
+        panel.allowedContentTypes = [.markdownDocument, .plainText]
         panel.nameFieldStringValue = core.currentPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "untitled.md"
         if panel.runModal() == .OK, let path = panel.url?.path {
             objectWillChange.send()
@@ -136,7 +140,7 @@ final class MacDocumentController: ObservableObject {
 
     func presentOpenPanel() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.markdown, .plainText]
+        panel.allowedContentTypes = [.markdownDocument, .plainText]
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let path = panel.url?.path {
             do {

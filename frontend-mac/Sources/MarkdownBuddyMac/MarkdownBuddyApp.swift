@@ -3,8 +3,22 @@ import AppCore
 import AppKit
 import SwiftUI
 
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
+        for window in NSApp.windows {
+            window.collectionBehavior.remove(.transient)
+            window.level = .normal
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+}
+
 @main
 struct MarkdownBuddyApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var controller = MacDocumentController()
 
     var body: some Scene {
