@@ -54,9 +54,8 @@ struct MarkdownBuddyCommands: Commands {
                 .keyboardShortcut("S", modifiers: [.command, .shift])
         }
 
-        CommandGroup(after: .appTermination) {
-            Button("Quit") { controller.quit() }
-                .keyboardShortcut("q")
+        CommandGroup(replacing: .appInfo) {
+            Button("About Markdown Buddy") { controller.showAbout() }
         }
 
         CommandMenu("Edit") {
@@ -66,8 +65,7 @@ struct MarkdownBuddyCommands: Commands {
                 .keyboardShortcut("i")
         }
 
-        CommandMenu("Help") {
-            Button("About") { controller.showAbout() }
+        CommandGroup(after: .help) {
             Button("Repository ↗") { controller.openRepository() }
         }
     }
