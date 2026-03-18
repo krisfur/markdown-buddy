@@ -111,6 +111,12 @@ struct SectionEntry {
     int32_t source_offset = 0;
 };
 
+struct WindowLayout {
+    RECT sidebar;
+    RECT editor;
+    RECT preview;
+};
+
 struct AppState {
     HINSTANCE instance = nullptr;
     HWND window = nullptr;
@@ -691,7 +697,6 @@ bool choose_path(HWND owner, bool saving, std::wstring &path) {
 }
 
 bool save_document_as(AppState &app);
-bool load_document_from_path(AppState &app, const std::wstring &path);
 
 bool save_document(AppState &app) {
     if (!app.has_path) {
@@ -882,24 +887,32 @@ RECT panel_rect_for_body(const RECT &outer) {
     return body;
 }
 
-void move_controls(AppState &app, int width, int height) {
-    RECT sidebar = {kOuterPadding, kOuterPadding, kOuterPadding + kSidebarWidth, height - kOuterPadding};
-    RECT content = {sidebar.right + kPanelGap, kOuterPadding, width - kOuterPadding, height - kOuterPadding};
-    int content_width = content.right - content.left;
-    int editor_width = (content_width - kPanelGap) / 2;
-    RECT editor = {content.left, content.top, content.left + editor_width, content.bottom};
-    RECT preview = {editor.right + kPanelGap, content.top, content.right, content.bottom};
+WindowLayout compute_layout(int width, int height) {
+    WindowLayout layout{};
+    layout.sidebar = {kOuterPadding, kOuterPadding, kOuterPadding + kSidebarWidth, height - kOuterPadding};
 
-    MoveWindow(app.sections_header, sidebar.left + 1, sidebar.top + 1, sidebar.right - sidebar.left - 2, kHeaderHeight - 1, TRUE);
-    RECT sidebar_body = panel_rect_for_body(sidebar);
+    RECT content = {layout.sidebar.right + kPanelGap, kOuterPadding, width - kOuterPadding, height - kOuterPadding};
+    const int content_width = content.right - content.left;
+    const int editor_width = (content_width - kPanelGap) / 2;
+
+    layout.editor = {content.left, content.top, content.left + editor_width, content.bottom};
+    layout.preview = {layout.editor.right + kPanelGap, content.top, content.right, content.bottom};
+    return layout;
+}
+
+void move_controls(AppState &app, int width, int height) {
+    const WindowLayout layout = compute_layout(width, height);
+
+    MoveWindow(app.sections_header, layout.sidebar.left + 1, layout.sidebar.top + 1, layout.sidebar.right - layout.sidebar.left - 2, kHeaderHeight - 1, TRUE);
+    RECT sidebar_body = panel_rect_for_body(layout.sidebar);
     MoveWindow(app.sections_list, sidebar_body.left + kInnerPadding, sidebar_body.top + kInnerPadding / 2, sidebar_body.right - sidebar_body.left - kInnerPadding * 2, sidebar_body.bottom - sidebar_body.top - kInnerPadding, TRUE);
 
-    MoveWindow(app.editor_header, editor.left + 1, editor.top + 1, editor.right - editor.left - 2, kHeaderHeight - 1, TRUE);
-    RECT editor_body = panel_rect_for_body(editor);
+    MoveWindow(app.editor_header, layout.editor.left + 1, layout.editor.top + 1, layout.editor.right - layout.editor.left - 2, kHeaderHeight - 1, TRUE);
+    RECT editor_body = panel_rect_for_body(layout.editor);
     MoveWindow(app.editor, editor_body.left + kInnerPadding, editor_body.top + kInnerPadding / 2, editor_body.right - editor_body.left - kInnerPadding * 2, editor_body.bottom - editor_body.top - kInnerPadding, TRUE);
 
-    MoveWindow(app.preview_header, preview.left + 1, preview.top + 1, preview.right - preview.left - 2, kHeaderHeight - 1, TRUE);
-    RECT preview_body = panel_rect_for_body(preview);
+    MoveWindow(app.preview_header, layout.preview.left + 1, layout.preview.top + 1, layout.preview.right - layout.preview.left - 2, kHeaderHeight - 1, TRUE);
+    RECT preview_body = panel_rect_for_body(layout.preview);
     MoveWindow(app.preview, preview_body.left + kInnerPadding, preview_body.top + kInnerPadding / 2, preview_body.right - preview_body.left - kInnerPadding * 2, preview_body.bottom - preview_body.top - kInnerPadding, TRUE);
 }
 
@@ -930,26 +943,21 @@ void paint_shell(AppState &app) {
     GetClientRect(app.window, &client);
     fill_vertical_gradient(dc, client, kShellTop, kShellBottom);
 
-    RECT sidebar = {kOuterPadding, kOuterPadding, kOuterPadding + kSidebarWidth, client.bottom - kOuterPadding};
-    RECT content = {sidebar.right + kPanelGap, kOuterPadding, client.right - kOuterPadding, client.bottom - kOuterPadding};
-    int content_width = content.right - content.left;
-    int editor_width = (content_width - kPanelGap) / 2;
-    RECT editor = {content.left, content.top, content.left + editor_width, content.bottom};
-    RECT preview = {editor.right + kPanelGap, content.top, content.right, content.bottom};
+    const WindowLayout layout = compute_layout(client.right, client.bottom);
 
-    draw_panel(dc, sidebar, app.brushes.sidebar_fill);
-    RECT sidebar_header = sidebar;
-    sidebar_header.bottom = sidebar.top + kHeaderHeight;
+    draw_panel(dc, layout.sidebar, app.brushes.sidebar_fill);
+    RECT sidebar_header = layout.sidebar;
+    sidebar_header.bottom = layout.sidebar.top + kHeaderHeight;
     FillRect(dc, &sidebar_header, app.brushes.panel_header_fill);
 
-    draw_panel(dc, editor, app.brushes.panel_fill);
-    RECT editor_header = editor;
-    editor_header.bottom = editor.top + kHeaderHeight;
+    draw_panel(dc, layout.editor, app.brushes.panel_fill);
+    RECT editor_header = layout.editor;
+    editor_header.bottom = layout.editor.top + kHeaderHeight;
     FillRect(dc, &editor_header, app.brushes.panel_header_fill);
 
-    draw_panel(dc, preview, app.brushes.panel_fill);
-    RECT preview_header = preview;
-    preview_header.bottom = preview.top + kHeaderHeight;
+    draw_panel(dc, layout.preview, app.brushes.panel_fill);
+    RECT preview_header = layout.preview;
+    preview_header.bottom = layout.preview.top + kHeaderHeight;
     FillRect(dc, &preview_header, app.brushes.panel_header_fill);
     EndPaint(app.window, &ps);
 }
