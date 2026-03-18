@@ -12,6 +12,10 @@ Made for educational purposes of learning how to combine a single backend with p
 
 ![screenshot-m](./screenshot-mac.png)
 
+**Windows (wine)**
+
+![screenshot-w](./screenshot-win.png)
+
 > Very much a work in progress.
 
 ## Structure
@@ -20,16 +24,35 @@ Multi language setup:
 - Backend: `Odin` -> `C ABI`
 - Frontend Linux: `GTK4`
 - Frontend Mac: `SwiftUI`
-- Frontend Windows: `Win32` + `Zig C++`
+- Frontend Windows: `Win32`
 
 ## Build
 
-- Linux: `./build-linux.sh`
-- macOS: `./build-mac.sh`
-- Windows: `./build-windows.sh`
+General requirement: `Odin`, `C/C++` compiler/build tools
 
-The Windows frontend currently builds a native Win32 executable with `zig c++` from `frontend-win/` and embeds a modern manifest for common controls and DPI awareness.
+- Linux: 
 
-The build outputs land in `dist/`, alongside the Linux and macOS artifacts.
+    extra requirement: `GTK4`
 
-`build-windows.sh` works around Odin's current Windows cross-linking limitation by building Windows COFF objects with Odin and linking `markdown_buddy.dll` with Zig.
+    ```bash
+    bash build-linux.sh
+    ./dist/markdown-buddy-gtk4 example.md
+    ```
+
+- macOS: 
+
+    extra requirement: `Swift`
+
+    ```bash
+    bash build-mac.sh
+    ./dist/markdown-buddy-mac example.md
+    ```
+
+- Windows (wine): 
+
+    extra requirement: `zig`
+
+    ```bash
+    bash build-windows.sh
+    DISPLAY=:0 wine ./dist/markdown-buddy-win.exe example.md
+    ```

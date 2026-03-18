@@ -351,6 +351,65 @@ void show_message_box(HWND owner, const wchar_t *title, const std::wstring &mess
     MessageBoxW(owner, message.c_str(), title, flags);
 }
 
+bool is_running_under_wine() {
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    return ntdll != nullptr && GetProcAddress(ntdll, "wine_get_version") != nullptr;
+}
+
+bool copy_text_to_clipboard(HWND owner, const std::wstring &text) {
+    if (!OpenClipboard(owner)) {
+        return false;
+    }
+
+    EmptyClipboard();
+    const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (memory == nullptr) {
+        CloseClipboard();
+        return false;
+    }
+
+    void *buffer = GlobalLock(memory);
+    memcpy(buffer, text.c_str(), bytes);
+    GlobalUnlock(memory);
+    if (SetClipboardData(CF_UNICODETEXT, memory) == nullptr) {
+        GlobalFree(memory);
+        CloseClipboard();
+        return false;
+    }
+
+    CloseClipboard();
+    return true;
+}
+
+bool launch_unix_command_via_wine(const std::wstring &program, const std::wstring &arguments) {
+    std::wstring command_line = L"cmd.exe /c start \"\" /unix \"" + program + L"\" " + arguments;
+    std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
+    mutable_command.push_back(L'\0');
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    BOOL created = CreateProcessW(
+        nullptr,
+        mutable_command.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        nullptr,
+        &startup,
+        &process
+    );
+    if (created) {
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        return true;
+    }
+    return false;
+}
+
 bool confirm_discard_changes(AppState &app) {
     if (!app.is_dirty) {
         return true;
@@ -734,7 +793,26 @@ void apply_backend_edit(AppState &app, int32_t command) {
 }
 
 void open_repository(AppState &app) {
-    ShellExecuteW(app.window, L"open", L"https://github.com/krisfur/markdown-buddy", nullptr, nullptr, SW_SHOWNORMAL);
+    const std::wstring url = L"https://github.com/krisfur/markdown-buddy";
+    HINSTANCE result = ShellExecuteW(app.window, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(result) > 32) {
+        return;
+    }
+
+    if (is_running_under_wine()) {
+        if (launch_unix_command_via_wine(L"Z:\\usr\\bin\\gio", L"open \"" + url + L"\"")) {
+            return;
+        }
+        if (launch_unix_command_via_wine(L"Z:\\usr\\bin\\xdg-open", L"\"" + url + L"\"")) {
+            return;
+        }
+    }
+
+    std::wstring message = L"Unable to open the repository automatically.\n\n" + url;
+    if (copy_text_to_clipboard(app.window, url)) {
+        message += L"\n\nThe URL has been copied to the clipboard.";
+    }
+    show_message_box(app.window, L"Open Repository", message, MB_OK | MB_ICONINFORMATION);
 }
 
 void show_about(AppState &app) {
@@ -876,6 +954,26 @@ void paint_shell(AppState &app) {
     EndPaint(app.window, &ps);
 }
 
+HACCEL create_accelerators() {
+    ACCEL entries[] = {
+        {FVIRTKEY | FCONTROL, 'N', static_cast<WORD>(kCommandNew)},
+        {FVIRTKEY | FCONTROL, 'O', static_cast<WORD>(kCommandOpen)},
+        {FVIRTKEY | FCONTROL, 'S', static_cast<WORD>(kCommandSave)},
+        {FVIRTKEY | FCONTROL | FSHIFT, 'S', static_cast<WORD>(kCommandSaveAs)},
+        {FVIRTKEY | FCONTROL, 'Q', static_cast<WORD>(kCommandQuit)},
+        {FVIRTKEY | FCONTROL, 'Z', static_cast<WORD>(kCommandUndo)},
+        {FVIRTKEY | FCONTROL | FSHIFT, 'Z', static_cast<WORD>(kCommandRedo)},
+        {FVIRTKEY | FCONTROL, 'X', static_cast<WORD>(kCommandCut)},
+        {FVIRTKEY | FCONTROL, 'C', static_cast<WORD>(kCommandCopy)},
+        {FVIRTKEY | FCONTROL, 'V', static_cast<WORD>(kCommandPaste)},
+        {FVIRTKEY | FCONTROL, 'A', static_cast<WORD>(kCommandSelectAll)},
+        {FVIRTKEY | FCONTROL, 'B', static_cast<WORD>(kCommandBold)},
+        {FVIRTKEY | FCONTROL, 'I', static_cast<WORD>(kCommandItalic)},
+        {FVIRTKEY, VK_F1, static_cast<WORD>(kCommandRepository)},
+    };
+    return CreateAcceleratorTableW(entries, static_cast<int>(std::size(entries)));
+}
+
 HMENU create_app_menu() {
     HMENU root = CreateMenu();
     HMENU file = CreatePopupMenu();
@@ -907,26 +1005,6 @@ HMENU create_app_menu() {
     AppendMenuW(root, MF_POPUP, reinterpret_cast<UINT_PTR>(edit), L"&Edit");
     AppendMenuW(root, MF_POPUP, reinterpret_cast<UINT_PTR>(help), L"&Help");
     return root;
-}
-
-HACCEL create_accelerators() {
-    ACCEL entries[] = {
-        {FVIRTKEY | FCONTROL, 'N', static_cast<WORD>(kCommandNew)},
-        {FVIRTKEY | FCONTROL, 'O', static_cast<WORD>(kCommandOpen)},
-        {FVIRTKEY | FCONTROL, 'S', static_cast<WORD>(kCommandSave)},
-        {FVIRTKEY | FCONTROL | FSHIFT, 'S', static_cast<WORD>(kCommandSaveAs)},
-        {FVIRTKEY | FCONTROL, 'Q', static_cast<WORD>(kCommandQuit)},
-        {FVIRTKEY | FCONTROL, 'Z', static_cast<WORD>(kCommandUndo)},
-        {FVIRTKEY | FCONTROL | FSHIFT, 'Z', static_cast<WORD>(kCommandRedo)},
-        {FVIRTKEY | FCONTROL, 'X', static_cast<WORD>(kCommandCut)},
-        {FVIRTKEY | FCONTROL, 'C', static_cast<WORD>(kCommandCopy)},
-        {FVIRTKEY | FCONTROL, 'V', static_cast<WORD>(kCommandPaste)},
-        {FVIRTKEY | FCONTROL, 'A', static_cast<WORD>(kCommandSelectAll)},
-        {FVIRTKEY | FCONTROL, 'B', static_cast<WORD>(kCommandBold)},
-        {FVIRTKEY | FCONTROL, 'I', static_cast<WORD>(kCommandItalic)},
-        {FVIRTKEY, VK_F1, static_cast<WORD>(kCommandRepository)},
-    };
-    return CreateAcceleratorTableW(entries, static_cast<int>(std::size(entries)));
 }
 
 HWND create_label(AppState &app, int id, const wchar_t *text) {
