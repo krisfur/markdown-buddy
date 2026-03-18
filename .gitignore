@@ -1,5 +1,8 @@
 dist/
+.zig-cache/
+zig-out/
 frontend-mac/.build/
+frontend-win/.build/
 frontend-mac/.swiftpm/
 testing/abi_c_test
 *.dSYM/

@@ -1,0 +1,6 @@
+LIBRARY markdown_buddy
+EXPORTS
+    mb_process_document
+    mb_free_document_result
+    mb_apply_edit_command
+    mb_free_edit_result
