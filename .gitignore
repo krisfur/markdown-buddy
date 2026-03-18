@@ -1,4 +1,6 @@
 dist/
+.zig-cache/
+zig-out/
 frontend-mac/.build/
 frontend-win/.build/
 frontend-mac/.swiftpm/

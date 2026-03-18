@@ -30,9 +30,15 @@ Multi language setup:
 
 General requirement: `Odin`, `C/C++` compiler/build tools
 
+Tested tool versions:
+- `Odin`: `dev-2026-03:1a5126c6b`
+- `GTK4`: `4.20.3`
+- `Swift`: `6.2.4`
+- `Zig`: `0.15.2`
+
 - Linux: 
 
-    extra requirement: `GTK4`
+    extra requirement: `GTK4 4.20.3`
 
     ```bash
     bash build-linux.sh
@@ -41,7 +47,7 @@ General requirement: `Odin`, `C/C++` compiler/build tools
 
 - macOS: 
 
-    extra requirement: `Swift`
+    extra requirement: `Swift 6.2.4`
 
     ```bash
     bash build-mac.sh
@@ -50,9 +56,9 @@ General requirement: `Odin`, `C/C++` compiler/build tools
 
 - Windows (wine): 
 
-    extra requirement: `zig`
+    extra requirement: `Zig 0.15.2`
 
     ```bash
-    bash build-windows.sh
+    zig build --build-file build-windows.zig windows --release=fast --prefix dist
     DISPLAY=:0 wine ./dist/markdown-buddy-win.exe example.md
     ```
